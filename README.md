@@ -11,7 +11,7 @@ Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten entgegennimmt, 12 s
 docker compose up -d --build
 ```
 
-Die Web-UI läuft auf **http://localhost:7860**.
+Die Web-UI läuft auf **http://localhost:7864**.
 
 ---
 
