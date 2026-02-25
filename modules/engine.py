@@ -22,13 +22,16 @@ from modules.parser import COLUMN_ALIASES, parse_german_number, parse_date
 logger = logging.getLogger("prefilter")
 
 # ── Weights & Config ────────────────────────────────────────
+# Note: FUZZY_KREDITOR is a Stammdaten-level finding (reported
+# once per name pair), NOT a per-booking flag.  It therefore has
+# no weight here and does not inflate individual scores.
 WEIGHTS = {
     "BETRAG_ZSCORE":             2.0,
     "BETRAG_IQR":                1.5,
     "SELTENE_KONTIERUNG":        1.5,
     "WOCHENENDE":                1.0,
     "AUSSERHALB_GESCHAEFTSZEIT": 1.5,
-    "MONATSENDE":                0.5,
+    "MONATSENDE":                0.25,
     "QUARTALSENDE":              0.5,
     "NEAR_DUPLICATE":            2.0,
     "BENFORD_1ZIFFER":           1.0,
@@ -45,7 +48,6 @@ WEIGHTS = {
     "SOLL_GLEICH_HABEN":         2.0,
     "KONTO_BETRAG_ANOMALIE":     2.0,
     "TEXT_KREDITOR_MISMATCH":     1.5,
-    "FUZZY_KREDITOR":            1.5,
     "LEERER_BUCHUNGSTEXT":       1.0,
     "VELOCITY_ANOMALIE":         1.5,
 }
@@ -68,7 +70,7 @@ RECHTSFORMEN = [
     "& co.", "&co.", "co", "corp.", "corp",
 ]
 
-OUTPUT_THRESHOLD = 1.0
+OUTPUT_THRESHOLD = 2.0
 MAX_OUTPUT_ROWS  = 1000
 
 NUM_TESTS = 21
@@ -92,11 +94,34 @@ def _norm_vendor(name: str) -> str:
 # ══════════════════════════════════════════════════════════════
 # ANOMALY ENGINE
 # ══════════════════════════════════════════════════════════════
+# Stopwords for TEXT_KREDITOR_MISMATCH — generic booking texts that
+# naturally appear across many creditors and should not trigger alerts.
+TEXT_STOPWORDS = {
+    "rechnung", "miete", "wartung", "zahlung", "gutschrift",
+    "überweisung", "ueberweisung", "dauerauftrag", "abbuchung",
+    "lastschrift", "gehalt", "lohn", "provision", "honorar",
+    "abrechnung", "ratenzahlung", "vorauszahlung", "anzahlung",
+    "kaution", "beitrag", "mitgliedsbeitrag", "spende",
+    "erstattung", "rückerstattung", "rueckerstattung",
+    "porto", "versand", "fracht", "nebenkosten",
+    "strom", "gas", "wasser", "telefon", "internet",
+    "reinigung", "entsorgung", "reparatur", "service",
+    "beratung", "schulung", "lizenz", "miete büro",
+    "büromaterial", "bueromaterial", "verbrauchsmaterial",
+}
+
+# Minimum text length for TEXT_KREDITOR_MISMATCH analysis
+TEXT_MISMATCH_MIN_LEN = 15
+
+
 class AnomalyEngine:
     def __init__(self, df: pd.DataFrame):
         self.df = df.copy()
         self.logs: list[str] = []
         self.flag_counts: dict[str, int] = {}
+        self.stammdaten_report: dict[str, list] = {
+            "fuzzy_kreditor_matches": [],
+        }
         self._prepare()
 
     # ── helpers ──────────────────────────────────────────────
@@ -566,7 +591,12 @@ class AnomalyEngine:
         self._log(f"[19/{NUM_TESTS}] KONTO_BETRAG_ANOMALIE: {c}")
 
     def _t19_text_kreditor_mismatch(self):
-        """Same booking text used with ≥3 different creditors."""
+        """Same booking text used with ≥3 different creditors.
+
+        Filters:
+        - Texts shorter than TEXT_MISMATCH_MIN_LEN are ignored
+        - Known stopwords (generic terms like 'Rechnung', 'Miete')
+          are excluded"""
         df = self.df
         has_both = (df["buchungstext"].astype(str).str.strip() != "") & \
                    (df["kreditor"].astype(str).str.strip() != "")
@@ -576,6 +606,13 @@ class AnomalyEngine:
             self._log(f"[20/{NUM_TESTS}] TEXT_KREDITOR_MISMATCH: 0")
             return
         subset["_text_norm"] = subset["buchungstext"].astype(str).str.lower().str.strip()
+
+        # Filter: min length + stopwords
+        len_ok = subset["_text_norm"].str.len() >= TEXT_MISMATCH_MIN_LEN
+        not_stop = ~subset["_text_norm"].isin(TEXT_STOPWORDS)
+        subset = subset.loc[len_ok & not_stop]
+
+        skipped = int((~len_ok).sum()) + int((~not_stop).sum())
 
         text_kreditors = subset.groupby("_text_norm")["kreditor"].nunique()
         suspicious_texts = set(text_kreditors[text_kreditors >= 3].index)
@@ -588,20 +625,27 @@ class AnomalyEngine:
                     self._flag(i, "TEXT_KREDITOR_MISMATCH")
                     c += 1
         self.flag_counts["TEXT_KREDITOR_MISMATCH"] = c
-        self._log(f"[20/{NUM_TESTS}] TEXT_KREDITOR_MISMATCH: {c}")
+        self._log(f"[20/{NUM_TESTS}] TEXT_KREDITOR_MISMATCH: {c}  "
+                  f"(Stopwords/kurze Texte übersprungen: {skipped})")
 
     def _t20_fuzzy_kreditor(self):
         """Fuzzy matching on creditor names with RapidFuzz.
 
+        STAMMDATEN-LEVEL: Results are reported as a separate table
+        (name_a, name_b, similarity, match_type) — NOT as per-booking
+        flags, to avoid inflating the suspicious-bookings count.
+
         Strategy:
         1. Normalise (lowercase, Umlaute→ASCII, strip Rechtsformen)
         2. Group exact normalisation duplicates
-        3. Jaro-Winkler (≥85) + Token Sort Ratio (≥85) on remaining"""
+        3. Jaro-Winkler (≥0.85) + Token Sort Ratio (≥85) on remaining"""
         df = self.df
         unique_kreds = df.loc[df["kreditor"].astype(str).str.strip() != "", "kreditor"].unique()
+        matches_out: list[dict] = []
+
         if len(unique_kreds) < 2:
-            self.flag_counts["FUZZY_KREDITOR"] = 0
-            self._log(f"[21/{NUM_TESTS}] FUZZY_KREDITOR: 0  (zu wenig Kreditoren)")
+            self.stammdaten_report["fuzzy_kreditor_matches"] = []
+            self._log(f"[21/{NUM_TESTS}] FUZZY_KREDITOR (Stammdaten): 0  (zu wenig Kreditoren)")
             return
 
         # Build normalised lookup
@@ -614,11 +658,17 @@ class AnomalyEngine:
         for orig, norm in normed_map.items():
             norm_to_originals.setdefault(norm, []).append(orig)
 
-        # Flag exact normalisation matches
-        all_fuzzy_names: set[str] = set()
+        # Exact normalisation matches → Stammdaten report
         for norm, origs in norm_to_originals.items():
             if len(origs) >= 2:
-                all_fuzzy_names.update(origs)
+                for a_idx in range(len(origs)):
+                    for b_idx in range(a_idx + 1, len(origs)):
+                        matches_out.append({
+                            "name_a": origs[a_idx],
+                            "name_b": origs[b_idx],
+                            "similarity": 100.0,
+                            "match_type": "Norm-Duplikat",
+                        })
                 self._log(f"    Norm-Duplikat: {origs}")
 
         # Fuzzy on unique normalised names
@@ -640,30 +690,37 @@ class AnomalyEngine:
                         score_cutoff=85,
                     )
 
-                    matches = set()
+                    found: dict[str, tuple[float, str]] = {}
                     if jw_match:
-                        matches.add(jw_match[0])
+                        found[jw_match[0]] = (jw_match[1] * 100, "Jaro-Winkler")
                     if ts_match:
-                        matches.add(ts_match[0])
+                        matched_norm_ts = ts_match[0]
+                        if matched_norm_ts in found:
+                            found[matched_norm_ts] = (
+                                max(found[matched_norm_ts][0], ts_match[1]),
+                                "Jaro-Winkler+TokenSort",
+                            )
+                        else:
+                            found[matched_norm_ts] = (ts_match[1], "TokenSort")
 
-                    for matched_norm in matches:
+                    for matched_norm, (sim, mtype) in found.items():
                         if matched_norm != norm:
                             group_a = norm_to_originals.get(norm, [])
                             group_b = norm_to_originals.get(matched_norm, [])
-                            all_fuzzy_names.update(group_a)
-                            all_fuzzy_names.update(group_b)
-                            self._log(f"    Fuzzy: {group_a} ↔ {group_b}")
+                            for na in group_a:
+                                for nb in group_b:
+                                    matches_out.append({
+                                        "name_a": na,
+                                        "name_b": nb,
+                                        "similarity": round(sim, 1),
+                                        "match_type": mtype,
+                                    })
+                            self._log(f"    Fuzzy ({mtype}, {sim:.1f}%): {group_a} ↔ {group_b}")
 
                 seen.append(norm)
 
-        c = 0
-        if all_fuzzy_names:
-            for i, row in df.iterrows():
-                if row["kreditor"] in all_fuzzy_names:
-                    self._flag(i, "FUZZY_KREDITOR")
-                    c += 1
-        self.flag_counts["FUZZY_KREDITOR"] = c
-        self._log(f"[21/{NUM_TESTS}] FUZZY_KREDITOR: {c}  ({len(all_fuzzy_names)} Namen)")
+        self.stammdaten_report["fuzzy_kreditor_matches"] = matches_out
+        self._log(f"[21/{NUM_TESTS}] FUZZY_KREDITOR (Stammdaten): {len(matches_out)} Paare")
 
     def _t21_leerer_buchungstext(self):
         """Empty or generic booking text (ISA 240 compliance)."""
@@ -812,5 +869,6 @@ class AnomalyEngine:
                 "flag_counts":  self.flag_counts,
             },
             "verdaechtige_buchungen": rows,
+            "stammdaten_report": self.stammdaten_report,
             "logs": self.logs,
         }

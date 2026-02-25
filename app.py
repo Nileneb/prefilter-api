@@ -31,18 +31,18 @@ ROOT_PATH = os.environ.get("ROOT_PATH", "")
 def analyze_file(file, webhook_url: str):
     """Main Gradio handler: file in → analysis + webhook push."""
     if file is None:
-        return "⚠️ Bitte eine Datei hochladen.", "", None
+        return "⚠️ Bitte eine Datei hochladen.", "", None, None
 
     filepath = file.name if hasattr(file, "name") else str(file)
     ext = os.path.splitext(filepath)[1].lower()
     if ext not in {".csv", ".xls", ".xlsx"}:
-        return f"⚠️ Nicht unterstützt: {ext} — nur CSV, XLS, XLSX", "", None
+        return f"⚠️ Nicht unterstützt: {ext} — nur CSV, XLS, XLSX", "", None, None
 
     # 1) Einlesen
     try:
         df = read_upload(filepath)
     except Exception as e:
-        return f"❌ Datei-Fehler: {e}", "", None
+        return f"❌ Datei-Fehler: {e}", "", None, None
 
     # 2) Spalten mappen
     df = map_columns(df)
@@ -58,12 +58,18 @@ def analyze_file(file, webhook_url: str):
         sorted(stats["flag_counts"].items(), key=lambda x: -x[1]) if v > 0
     )
 
+    # Stammdaten summary
+    stamm = result.get("stammdaten_report", {})
+    fuzzy_matches = stamm.get("fuzzy_kreditor_matches", [])
+    stamm_info = f"🏢 Kreditor-Duplikate (Stammdaten): {len(fuzzy_matches)} Paare"
+
     summary = (
         f"✅ Analyse abgeschlossen\n\n"
         f"📊 Gesamt: {stats['total_input']} Buchungen\n"
         f"🔍 Verdächtig: {stats['total_output']} ({stats['filter_ratio']})\n"
-        f"📈 Ø Score: {stats['avg_score']}\n\n"
-        f"Flags:\n{flag_str}\n"
+        f"📈 Ø Score: {stats['avg_score']}\n"
+        f"{stamm_info}\n\n"
+        f"Buchungs-Flags:\n{flag_str}\n"
     )
 
     top3 = result["verdaechtige_buchungen"][:3]
@@ -76,12 +82,19 @@ def analyze_file(file, webhook_url: str):
                 f"     Flags: {r['anomaly_flags']}\n"
             )
 
-    # 5) Tabelle für Gradio
+    # 5) Tabellen für Gradio
     if result["verdaechtige_buchungen"]:
         display_df = pd.DataFrame(result["verdaechtige_buchungen"])
         display_df = display_df.sort_values("anomaly_score", ascending=False)
     else:
         display_df = pd.DataFrame()
+
+    # Stammdaten-Report table
+    if fuzzy_matches:
+        stamm_df = pd.DataFrame(fuzzy_matches)
+        stamm_df = stamm_df.sort_values("similarity", ascending=False)
+    else:
+        stamm_df = pd.DataFrame(columns=["name_a", "name_b", "similarity", "match_type"])
 
     # 6) Webhook push
     webhook_status = ""
@@ -97,7 +110,7 @@ def analyze_file(file, webhook_url: str):
 
     summary += f"\n\n📡 {webhook_status}"
 
-    return summary, "\n".join(result["logs"]), display_df
+    return summary, "\n".join(result["logs"]), display_df, stamm_df
 
 
 # ── Build UI ─────────────────────────────────────────────────
@@ -141,7 +154,13 @@ with gr.Blocks(
             )
         with gr.Tab("📊 Verdächtige Buchungen"):
             table_output = gr.Dataframe(
-                label="Verdächtige Buchungen (sortiert nach Score)",
+                label="Verdächtige Buchungen (sortiert nach Score, Threshold ≥ 2.0)",
+                interactive=False,
+                wrap=True,
+            )
+        with gr.Tab("🏢 Stammdaten-Report"):
+            stamm_output = gr.Dataframe(
+                label="Kreditor-Duplikate (Fuzzy-Matching auf Stammdaten-Ebene)",
                 interactive=False,
                 wrap=True,
             )
@@ -153,7 +172,7 @@ with gr.Blocks(
     analyze_btn.click(
         fn=analyze_file,
         inputs=[file_input, webhook_input],
-        outputs=[summary_output, logs_output, table_output],
+        outputs=[summary_output, logs_output, table_output, stamm_output],
     )
 
     gr.Markdown(

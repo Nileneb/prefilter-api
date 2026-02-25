@@ -488,8 +488,8 @@ class TestEngineVelocityAnomalie:
 
 
 class TestEngineFuzzyKreditor:
-    def test_similar_names_flagged(self):
-        """Similar creditor names (e.g. GmbH vs no GmbH) → flagged."""
+    def test_similar_names_in_stammdaten(self):
+        """Similar creditor names → reported in stammdaten_report, not per-booking."""
         df = _make_df(
             datum=["2024-01-15"] * 4,
             betrag=["100,00"] * 4,
@@ -508,11 +508,15 @@ class TestEngineFuzzyKreditor:
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t20_fuzzy_kreditor()
-        # At least 2 should be flagged (Mueller/Müller pair)
-        assert engine.flag_counts["FUZZY_KREDITOR"] >= 2
+        matches = engine.stammdaten_report["fuzzy_kreditor_matches"]
+        # At least 1 pair should be found
+        assert len(matches) >= 1
+        # No per-booking FUZZY_KREDITOR flags should exist
+        for _, row in engine.df.iterrows():
+            assert "FUZZY_KREDITOR" not in row["_flags"]
 
-    def test_completely_different_not_flagged(self):
-        """Completely different creditors → not flagged."""
+    def test_completely_different_no_matches(self):
+        """Completely different creditors → no matches in stammdaten_report."""
         df = _make_df(
             datum=["2024-01-15"] * 2,
             betrag=["100,00"] * 2,
@@ -526,7 +530,31 @@ class TestEngineFuzzyKreditor:
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t20_fuzzy_kreditor()
-        assert engine.flag_counts["FUZZY_KREDITOR"] == 0
+        matches = engine.stammdaten_report["fuzzy_kreditor_matches"]
+        assert len(matches) == 0
+
+    def test_match_has_required_fields(self):
+        """Each match in stammdaten_report has name_a, name_b, similarity, match_type."""
+        df = _make_df(
+            datum=["2024-01-15"] * 2,
+            betrag=["100,00"] * 2,
+            konto_soll=["4711"] * 2,
+            konto_haben=["1200"] * 2,
+            buchungstext=["Einkauf"] * 2,
+            belegnummer=["001", "002"],
+            kreditor=["Mueller Elektronik GmbH", "Müller Elektronik"],
+            erfasser=["User"] * 2,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t20_fuzzy_kreditor()
+        matches = engine.stammdaten_report["fuzzy_kreditor_matches"]
+        assert len(matches) >= 1
+        for m in matches:
+            assert "name_a" in m
+            assert "name_b" in m
+            assert "similarity" in m
+            assert "match_type" in m
 
 
 class TestEngineNormVendor:
@@ -541,6 +569,100 @@ class TestEngineNormVendor:
         assert "oe" in _norm_vendor("Böhm")
         assert "ue" in _norm_vendor("Grün")
         assert "ae" in _norm_vendor("Bär")
+
+
+class TestEngineTextKreditorStopwords:
+    def test_generic_text_not_flagged(self):
+        """Generic texts like 'Rechnung' should be ignored (stopword)."""
+        df = _make_df(
+            datum=["2024-01-15"] * 12,
+            betrag=["100,00"] * 12,
+            konto_soll=["4711"] * 12,
+            konto_haben=["1200"] * 12,
+            buchungstext=["Rechnung"] * 12,  # generic stopword
+            belegnummer=[f"{i:04d}" for i in range(12)],
+            kreditor=[f"Kreditor {chr(65+i)}" for i in range(12)],
+            erfasser=["User"] * 12,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t19_text_kreditor_mismatch()
+        assert engine.flag_counts["TEXT_KREDITOR_MISMATCH"] == 0
+
+    def test_short_text_not_flagged(self):
+        """Short texts (<15 chars) should be ignored."""
+        df = _make_df(
+            datum=["2024-01-15"] * 12,
+            betrag=["100,00"] * 12,
+            konto_soll=["4711"] * 12,
+            konto_haben=["1200"] * 12,
+            buchungstext=["Miete Büro"] * 12,  # <15 chars
+            belegnummer=[f"{i:04d}" for i in range(12)],
+            kreditor=[f"Kreditor {chr(65+i)}" for i in range(12)],
+            erfasser=["User"] * 12,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t19_text_kreditor_mismatch()
+        assert engine.flag_counts["TEXT_KREDITOR_MISMATCH"] == 0
+
+    def test_specific_long_text_still_flagged(self):
+        """Specific long text across ≥3 creditors should be flagged."""
+        # 4 different creditors with same specific long text
+        df = _make_df(
+            datum=["2024-01-15"] * 4,
+            betrag=["100,00"] * 4,
+            konto_soll=["4711"] * 4,
+            konto_haben=["1200"] * 4,
+            buchungstext=["Spezialreinigung der Fassade Nord"] * 4,
+            belegnummer=["001", "002", "003", "004"],
+            kreditor=["Firma A", "Firma B", "Firma C", "Firma D"],
+            erfasser=["User"] * 4,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t19_text_kreditor_mismatch()
+        assert engine.flag_counts["TEXT_KREDITOR_MISMATCH"] == 4
+
+
+class TestEngineOutputThreshold:
+    def test_low_score_not_in_output(self):
+        """Bookings with score < 2.0 should not appear in output (unless critical)."""
+        # 20 distinct bookings — varied amounts, varied dates, varied accounts
+        # Designed to avoid triggering critical flags
+        df = _make_df(
+            datum=[f"2024-{m:02d}-{d:02d}" for m, d in
+                   [(1,5),(2,10),(3,15),(4,20),(5,5),(6,10),(7,15),(8,20),
+                    (9,5),(10,10),(11,15),(12,20),(1,8),(2,12),(3,18),
+                    (4,22),(5,8),(6,12),(7,18),(8,22)]],
+            betrag=[f"{(i+1)*137},00" for i in range(20)],
+            konto_soll=[f"4{700+i}" for i in range(20)],
+            konto_haben=[f"1{200+i}" for i in range(20)],
+            buchungstext=[f"Spezifische Buchung Nummer {i+1:04d} Detail" for i in range(20)],
+            belegnummer=[f"{i:04d}" for i in range(20)],
+            kreditor=[f"Lieferant {chr(65 + i % 20)}" for i in range(20)],
+            erfasser=["UserAlpha"] * 20,
+        )
+        engine = AnomalyEngine(df)
+        result = engine.run()
+        total = result["statistics"]["total_input"]
+        suspicious = result["statistics"]["total_output"]
+        ratio = suspicious / total * 100 if total > 0 else 0
+        # With distinct normal data and threshold 2.0, most should be filtered out
+        assert ratio < 50, f"Ratio {ratio:.1f}% too high for normal data"
+
+    def test_critical_flag_always_in_output(self):
+        """Bookings with critical flags appear even if score < 2.0."""
+        from modules.engine import CRITICAL_FLAGS
+        # A booking with Soll=Haben (critical flag, weight 2.0) should appear
+        df = _make_df(
+            konto_soll=["4711"],
+            konto_haben=["4711"],
+            buchungstext=["Spezielle Buchung mit gleichem Konto"],
+        )
+        engine = AnomalyEngine(df)
+        result = engine.run()
+        assert result["statistics"]["total_output"] >= 1
 
 
 class TestEngineFullRun:
@@ -586,7 +708,7 @@ class TestEngineFullRun:
         engine = AnomalyEngine(df)
         result = engine.run()
         fc = result["statistics"]["flag_counts"]
-        # All 25 flag names must be present (some tests produce multiple flags)
+        # All flag names must be present (FUZZY_KREDITOR is Stammdaten, not per-booking)
         expected_flags = {
             "BETRAG_ZSCORE", "BETRAG_IQR", "SELTENE_KONTIERUNG",
             "WOCHENENDE", "MONATSENDE", "QUARTALSENDE",
@@ -597,8 +719,11 @@ class TestEngineFullRun:
             "DOPPELTE_BELEGNUMMER", "BELEG_KREDITOR_DUPLIKAT",
             "STORNO", "NEUER_KREDITOR_HOCH", "SOLL_GLEICH_HABEN",
             "KONTO_BETRAG_ANOMALIE", "TEXT_KREDITOR_MISMATCH",
-            "FUZZY_KREDITOR", "LEERER_BUCHUNGSTEXT",
+            "LEERER_BUCHUNGSTEXT",
             "VELOCITY_ANOMALIE",
         }
         assert expected_flags == set(fc.keys()), \
             f"Missing: {expected_flags - set(fc.keys())}, Extra: {set(fc.keys()) - expected_flags}"
+        # stammdaten_report must be present
+        assert "stammdaten_report" in result
+        assert "fuzzy_kreditor_matches" in result["stammdaten_report"]
