@@ -1,4 +1,4 @@
-# Buchungs-Anomalie Pre-Filter v4.0
+# Buchungs-Anomalie Pre-Filter v4.1
 
 Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten entgegennimmt, 14 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
 
@@ -17,16 +17,35 @@ Die Web-UI läuft auf **http://localhost:7864**.
 
 ## Lokale Entwicklung
 
+> **Docker Compose ist der empfohlene Betriebsmodus.** Ohne Redis/Celery startet
+> `app.py` automatisch im lokalen Fallback-Modus (direkte Analyse ohne Worker).
+
 ```bash
-# conda-Umgebung anlegen (Python 3.13 ist inkompatibel — conda nutzen)
 conda create -n prefilter-dev python=3.12
 conda run -n prefilter-dev pip install -r requirements.txt
 
-# Tests ausführen
+# Tests ausführen (Unit-Tests, ohne slow/integration)
 conda run -n prefilter-dev python -m pytest tests/ -v
 
-# App starten
+# Performance-Test (500k Zeilen)
+conda run -n prefilter-dev python -m pytest tests/ -v -m slow
+
+# Integration-Tests (Redis muss laufen)
+conda run -n prefilter-dev python -m pytest tests/ -v -m integration
+
+# App starten (lokaler Fallback ohne Redis)
 conda run -n prefilter-dev python app.py
+```
+
+### requirements.lock aktualisieren
+
+Nach Änderungen an `requirements.txt`:
+
+```bash
+docker run --rm -v "$PWD/requirements.txt:/app/requirements.txt" \
+  python:3.12-slim sh -c \
+  "pip install --no-cache-dir -r /app/requirements.txt >/dev/null 2>&1 && pip freeze" \
+  > requirements.lock
 ```
 
 ---
@@ -182,20 +201,46 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 
 ---
 
+## Worker-Skalierung (große Datensätze)
+
+Standard: 2 Worker-Replicas mit je 8 Celery-Prozessen. Für große Uploads skalieren:
+
+```bash
+# Mehr Worker-Replicas
+docker compose up -d --build --scale worker=4
+
+# Oder via .env
+WORKER_REPLICAS=4
+WORKER_CONCURRENCY=8
+```
+
+> **Hinweis:** Mehr Replicas erhöhen den Durchsatz (parallele Jobs). Eine einzelne
+> riesige Datei wird dadurch nicht schneller — dafür wäre Job-Partitionierung nötig.
+
+---
+
 ## Projektstruktur
 
 ```
 prefilter-api/
 ├── .env                 # LANGDOCK_WEBHOOK_URL, GRADIO_USERNAME/PASSWORD (nicht im Git!)
-├── docker-compose.yml   # Container-Definition mit env_file
+├── docker-compose.yml   # Container-Definition (ui, worker, redis)
 ├── Dockerfile           # Python 3.12-slim + Dependencies
 ├── pyproject.toml       # Paket-Metadaten + pytest-Konfiguration
-├── requirements.txt     # Python-Abhängigkeiten
-├── app.py               # Gradio UI + Handler
-├── modules/
-│   ├── engine.py        # AnomalyEngine: 14 Tests, vollständig vektorisiert
-│   ├── parser.py        # CSV/XLS Einlesen + Spalten-Mapping + serie-Parsing
-│   └── webhook.py       # Langdock Webhook Push (3 Retries)
+├── requirements.txt     # Python-Abhängigkeiten (loose pins)
+├── requirements.lock    # pip freeze → reproduzierbare Builds
+├── app.py               # Gradio UI + Celery-Dispatcher + lokaler Fallback
+├── src/
+│   ├── config.py        # AnalysisConfig (Pydantic-Schwellenwerte)
+│   ├── engine.py        # AnomalyEngine: orchestriert 14 Tests
+│   ├── main.py          # FastAPI REST API + WebSocket
+│   ├── models.py        # Pydantic-Ergebnis-Modelle
+│   ├── parser.py        # CSV/XLS Einlesen + Spalten-Mapping + Serie-Parsing
+│   ├── webhook.py       # Langdock Webhook Push (3 Retries)
+│   ├── worker.py        # Celery Task (Redis-Backend)
+│   └── tests/           # Test-Module (betrag, duplikate, buchungslogik, …)
 └── tests/
-    └── test_engine.py   # 51 Unit-Tests
+    ├── test_engine.py       # 51 Unit-Tests
+    ├── test_performance.py  # 500k-Zeilen Benchmark (@pytest.mark.slow)
+    └── test_integration.py  # FastAPI+Redis E2E (@pytest.mark.integration)
 ```

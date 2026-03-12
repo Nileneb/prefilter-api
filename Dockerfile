@@ -3,8 +3,15 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Dependencies first (layer caching)
+# requirements.lock = pip freeze output → reproducible builds
+# Fallback: requirements.txt (loose pins) when lock doesn't exist yet
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.loc[k] .
+RUN if [ -f requirements.lock ]; then \
+      pip install --no-cache-dir -r requirements.lock; \
+    else \
+      pip install --no-cache-dir -r requirements.txt; \
+    fi
 
 COPY src/ src/
 COPY app.py .

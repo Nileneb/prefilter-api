@@ -227,11 +227,6 @@ def cancel_analysis():
 # ── Build UI ─────────────────────────────────────────────────
 with gr.Blocks(
     title="Buchungs-Anomalie Pre-Filter",
-    theme=gr.themes.Soft(),
-    css="""
-    .main-title { text-align: center; margin-bottom: 0.5em; }
-    .subtitle   { text-align: center; color: #666; margin-bottom: 1.5em; }
-    """,
 ) as demo:
 
     gr.Markdown("# Buchungs-Anomalie Pre-Filter", elem_classes="main-title")
@@ -334,6 +329,9 @@ if __name__ == "__main__":
         "server_port": 7864,
         "share":       False,
         "auth":        auth,
+        "theme":       gr.themes.Soft(),
+        "css":         ".main-title { text-align: center; margin-bottom: 0.5em; } "
+                       ".subtitle   { text-align: center; color: #666; margin-bottom: 1.5em; }",
     }
     if ROOT_PATH:
         launch_kwargs["root_path"] = ROOT_PATH
