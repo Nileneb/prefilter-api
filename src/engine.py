@@ -92,6 +92,11 @@ class AnomalyEngine:
         df["_datum"]  = parse_date_series(df["datum"])
         df["_score"]  = 0.0
 
+        # Kategorische Spalten — beschleunigt GroupBy um ~30-50%
+        for col in ("konto_soll", "konto_haben"):
+            if col in df.columns:
+                df[col] = df[col].astype("category")
+
         # Boolean-Spalten — eine pro Flag (kein Listen-Anti-Pattern)
         for name in _FLAG_NAMES:
             df[f"flag_{name}"] = False

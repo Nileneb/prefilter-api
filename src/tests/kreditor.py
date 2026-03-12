@@ -47,10 +47,10 @@ class VelocityAnomalie(AnomalyTest):
 
         subset["_ym"] = subset["_datum"].dt.to_period("M").astype(str)
         kred_month = (
-            subset.groupby(["kreditor", "_ym"]).size().reset_index(name="cnt")
+            subset.groupby(["kreditor", "_ym"], observed=True).size().reset_index(name="cnt")
         )
         kred_stats = (
-            kred_month.groupby("kreditor")["cnt"]
+            kred_month.groupby("kreditor", observed=True)["cnt"]
             .agg(km_mean="mean", km_std="std", n_months="count")
             .reset_index()
         )

@@ -595,6 +595,52 @@ class TestEngineFehlendeMonatsbuchung:
         ]
         assert len(flagged_4711) == 0
 
+    def test_consecutive_missing_months_detected(self):
+        """Zwei aufeinanderfolgende fehlende Monate → alle Nachbarn geflaggt."""
+        dates  = []
+        konten = []
+        # 10 Monate, Monate 5+6 fehlen komplett
+        for m in [1, 2, 3, 4, 7, 8, 9, 10]:
+            for _ in range(3):
+                dates.append(f"2024-{m:02d}-15")
+                konten.append("4711")
+        df = _make_df(
+            datum=dates,
+            betrag=["500,00"] * len(dates),
+            konto_soll=konten,
+            konto_haben=["1200"] * len(dates),
+            buchungstext=["Buchung"] * len(dates),
+            belegnummer=[f"{i:04d}" for i in range(len(dates))],
+            erfasser=["User"] * len(dates),
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t26_fehlende_monatsbuchung()
+        # Monate 4 und 7 sind Nachbarn der Lücke → deren Buchungen geflaggt
+        assert engine.flag_counts["FEHLENDE_MONATSBUCHUNG"] >= 6  # 3+3
+
+    def test_all_months_present_no_flag(self):
+        """Konto bucht in allen Monaten → kein Flag."""
+        dates  = []
+        konten = []
+        for m in range(1, 13):
+            for _ in range(2):
+                dates.append(f"2024-{m:02d}-15")
+                konten.append("4711")
+        df = _make_df(
+            datum=dates,
+            betrag=["500,00"] * len(dates),
+            konto_soll=konten,
+            konto_haben=["1200"] * len(dates),
+            buchungstext=["Buchung"] * len(dates),
+            belegnummer=[f"{i:04d}" for i in range(len(dates))],
+            erfasser=["User"] * len(dates),
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t26_fehlende_monatsbuchung()
+        assert engine.flag_counts["FEHLENDE_MONATSBUCHUNG"] == 0
+
 
 class TestEngineOutputThreshold:
     def test_low_score_not_in_output(self):

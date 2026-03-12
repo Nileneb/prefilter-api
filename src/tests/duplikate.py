@@ -24,7 +24,7 @@ class NearDuplicate(AnomalyTest):
         flagged: set[int] = set()
         window = config.near_duplicate_days
 
-        for _, grp in df.groupby(["_abs", "konto_soll", "konto_haben"], sort=False):
+        for _, grp in df.groupby(["_abs", "konto_soll", "konto_haben"], sort=False, observed=True):
             if len(grp) < 2:
                 continue
 
@@ -35,14 +35,13 @@ class NearDuplicate(AnomalyTest):
             dated = grp[grp["_datum"].notna()].sort_values("_datum")
             if len(dated) < 2:
                 continue
-            idxs  = dated.index.tolist()
-            dvals = dated["_datum"].tolist()
-            for i in range(len(dvals)):
-                for j in range(i + 1, len(dvals)):
-                    if (dvals[j] - dvals[i]).days > window:
-                        break
-                    flagged.add(idxs[i])
-                    flagged.add(idxs[j])
+
+            # Vektorisiert: Tages-Differenz zum Vorgänger
+            diffs = dated["_datum"].diff().dt.days
+            close_mask = diffs.fillna(window + 1) <= window
+            # Auch die Vorgänger-Zeile jedes nahen Paares flaggen
+            prev_mask = close_mask.shift(-1, fill_value=False)
+            flagged.update(dated.index[close_mask | prev_mask])
 
         if flagged:
             df.loc[list(flagged), f"flag_{self.name}"] = True
@@ -80,7 +79,7 @@ class BelegKreditorDuplikat(AnomalyTest):
 
         # Level 2: gleicher Kreditor + gleicher Betrag + Datum ≤ window Tage
         has_ka = (kred != "") & (df["_abs"] > 0)
-        for _, grp in df.loc[has_ka].groupby(["kreditor", "_abs"], sort=False):
+        for _, grp in df.loc[has_ka].groupby(["kreditor", "_abs"], sort=False, observed=True):
             if len(grp) < 2:
                 continue
             dated = grp[grp["_datum"].notna()].sort_values("_datum")

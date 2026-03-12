@@ -40,12 +40,12 @@ class MonatsEntwicklung(AnomalyTest):
         pnl["_ym"] = pnl["_datum"].dt.to_period("M").astype(str)
 
         monthly = (
-            pnl.groupby(["konto_soll", "_ym"])["_abs"]
+            pnl.groupby(["konto_soll", "_ym"], observed=True)["_abs"]
             .sum()
             .reset_index(name="monatssumme")
         )
         konto_stats = (
-            monthly.groupby("konto_soll")["monatssumme"]
+            monthly.groupby("konto_soll", observed=True)["monatssumme"]
             .agg(ks_mean="mean", ks_std="std", ks_count="count")
             .reset_index()
         )
@@ -104,7 +104,7 @@ class FehlendeMonatsbuchung(AnomalyTest):
         if len(full_range) < 6:
             return 0
 
-        konto_month_cnt = subset.groupby("konto_soll")["_ym"].nunique()
+        konto_month_cnt = subset.groupby("konto_soll", observed=True)["_ym"].nunique()
         # min_active basiert auf voller Zeitspanne, nicht nur auf vorhandenen Monaten
         min_active      = max(3, len(full_range) * config.fehlende_buchung_min_quote)
         regular         = konto_month_cnt[konto_month_cnt >= min_active].index

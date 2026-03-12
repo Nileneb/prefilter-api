@@ -28,6 +28,7 @@ class JobStatusResponse(BaseModel):
 
 
 # ── Analysis result (matches src/engine.py run() return dict) ─────────────────
+# Jeder Test setzt flag_<NAME> in-place. Score = gewichtete Summe der Flags.
 
 class FlagCounts(BaseModel):
     BETRAG_ZSCORE: int = 0

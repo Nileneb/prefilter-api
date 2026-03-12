@@ -52,7 +52,7 @@ class KontoBetragAnomalie(AnomalyTest):
 
         konto_stats = (
             df.loc[has_konto & (df["_abs"] > 0)]
-            .groupby("konto_soll")["_abs"]
+            .groupby("konto_soll", observed=True)["_abs"]
             .agg(konto_mean="mean", konto_std="std", konto_count="count")
         )
         konto_stats = konto_stats[
