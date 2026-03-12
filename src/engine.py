@@ -15,12 +15,12 @@ Public API:
 
 from __future__ import annotations
 
-import logging
 from typing import Callable
 
 import pandas as pd
 
 from src.config import AnalysisConfig
+from src.logging_config import get_logger
 from src.parser import COLUMN_ALIASES, parse_german_number_series, parse_date_series
 from src.tests.base import EngineStats
 from src.tests.betrag import get_tests as get_betrag_tests
@@ -29,7 +29,7 @@ from src.tests.buchungslogik import get_tests as get_buchungslogik_tests
 from src.tests.kreditor import get_tests as get_kreditor_tests
 from src.tests.zeitreihe import get_tests as get_zeitreihe_tests
 
-logger = logging.getLogger("prefilter")
+logger = get_logger("prefilter.engine")
 
 # ── Test-Registry ────────────────────────────────────────────────────────────
 # Reihenfolge ist bewusst: Betrags-Tests zuerst (für Stats), dann der Rest

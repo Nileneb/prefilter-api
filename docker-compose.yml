@@ -15,6 +15,8 @@ services:
       - GRADIO_USERNAME=${GRADIO_USERNAME:-}
       - GRADIO_PASSWORD=${GRADIO_PASSWORD:-}
       - ROOT_PATH=${ROOT_PATH:-}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - uploads:/data/uploads
     depends_on:
@@ -36,6 +38,8 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - PARALLEL_THRESHOLD=${PARALLEL_THRESHOLD:-100000}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - uploads:/data/uploads
     depends_on:

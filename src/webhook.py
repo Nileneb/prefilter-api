@@ -3,11 +3,12 @@ Buchungs-Anomalie Pre-Filter — Webhook Client with retry.
 """
 
 import time
-import logging
 
 import httpx
 
-logger = logging.getLogger("prefilter")
+from src.logging_config import get_logger
+
+logger = get_logger("prefilter.webhook")
 
 MAX_RETRIES = 3
 RETRY_DELAYS = [1, 3, 5]  # seconds between retries

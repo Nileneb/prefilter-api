@@ -12,4 +12,5 @@ env.bak/
 venv.bak/   
 .venv/
 .pytest_cache/
+prefilter_todo_v7.txt
 prefilter_todo_v6.txt

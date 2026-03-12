@@ -1,0 +1,30 @@
+﻿Nr;Flag-Name;Beschreibung;Priorität (benötigt/nicht benötigt/?);Gewicht;Kritisch;Im Code (v4.1);Benötigte kanonische Spalten;Diamant-Quellspalte(n);Spalte vorhanden?;Status nach Parser-Fix
+1;BETRAG_ZSCORE;Betrag > 2.5 Std-Abweichungen vom Mittelwert;?;2.0;✓;✓;betrag;FiBuBetrag;✓;✅ funktioniert
+2;BETRAG_IQR;Betrag oberhalb IQR-Fence (Q3 + 1.5 × IQR);?;1.5;;✓;betrag;FiBuBetrag;✓;✅ funktioniert
+3;NEAR_DUPLICATE;Gleicher Betrag+Konto, Datum ≤3 Tage;x;2.0;✓;✓;"datum; betrag; konto";"Belegdatum; FiBuBetrag; Kontonummer";✓;✅ funktioniert
+4;DOPPELTE_BELEGNUMMER;Gleiche Belegnummer mehrfach;x;2.0;✓;✓;belegnummer;Belegnummer;✓;✅ funktioniert
+5;BELEG_KREDITOR_DUPLIKAT;Gleiche Belegnummer + gleicher Kreditor;x;2.5;✓;✓;"belegnummer; kreditor";"Belegnummer; Bezeichnung";✓;✅ funktioniert (Bezeichnung→kreditor)
+6;STORNO;Buchungstext enthält Storno/Korrektur/Rückbuchung;x;1.5;✓;✓;"buchungstext; betrag";"Buchungstext; FiBuBetrag";✓;✅ funktioniert
+7;LEERER_BUCHUNGSTEXT;Buchungstext fehlt oder <3 Zeichen;x;1.0;;✓;buchungstext;Buchungstext;✓;✅ funktioniert
+8;RECHNUNGSDATUM_PERIODE;Rechnungsmonat ≠ Buchungsmonat;;1.5;;✓;"datum; rechnungsdatum";"Belegdatum; (nicht vorhanden)";⚠️ rechnungsdatum fehlt;⚠️ läuft leer — kein separates Rechnungsdatum
+9;BUCHUNGSTEXT_PERIODE;Periodenangabe im Text ≠ Buchungsdatum;;1.0;;✓;"buchungstext; datum";"Buchungstext; Belegdatum";✓;✅ funktioniert
+10;NEUER_KREDITOR_HOCH;Neuer Kreditor (≤2 Buchungen) + hoher Betrag;x;2.5;✓;✓;"kreditor; betrag";"Bezeichnung; FiBuBetrag";✓;✅ funktioniert (Bezeichnung→kreditor)
+11;KONTO_BETRAG_ANOMALIE;Betrag ist Ausreißer auf Kontoebene (Z-Score);?;2.0;✓;✓;"konto; betrag";"Kontonummer; FiBuBetrag";✓;✅ funktioniert
+12;VELOCITY_ANOMALIE;Ungewöhnlich viele Buchungen eines Erfassers/Tag;x;1.5;;✓;"erfasser; datum";"(nicht im Export); Belegdatum";❌ erfasser fehlt;❌ läuft leer — Erfasser nicht im Diamant-Export
+13;MONATS_ENTWICKLUNG;Monatsbetrag auf GuV-Konto ist Z-Score-Ausreißer;;1.5;;✓;"datum; betrag; konto";"Belegdatum; FiBuBetrag; Kontonummer";✓;✅ funktioniert
+14;FEHLENDE_MONATSBUCHUNG;Konto hat regulär monatl. Buchungen, fehlt aber;;1.0;;✓;"datum; konto";"Belegdatum; Kontonummer";✓;✅ funktioniert
+15;SELTENE_KONTIERUNG;Ungewöhnliche Soll/Haben-Kontenkombinationen;nicht benötigt;-;;✗;"konto; konto_haben";"Kontonummer; (kein Gegenkonto)";⚠️ konto_haben fehlt;nicht implementiert + nicht benötigt
+16;WOCHENENDE;Buchungen an Samstagen/Sonntagen;nicht benötigt;-;;✗;datum;Belegdatum;✓;nicht implementiert (nicht benötigt)
+17;AUSSERHALB_GESCHAEFTSZEIT;Buchungen zwischen 22:00 und 06:00;nicht benötigt;-;;✗;erfassungsdatum (mit Uhrzeit);ErfassungAm;✓;nicht implementiert (nicht benötigt)
+18;MONATSENDE;Buchungen an letzten 3 Tagen eines Monats;nicht benötigt;-;;✗;datum;Belegdatum;✓;nicht implementiert (nicht benötigt)
+19;QUARTALSENDE;Buchungen am Quartalsende;nicht benötigt;-;;✗;datum;Belegdatum;✓;nicht implementiert (nicht benötigt)
+20;BENFORD_1ZIFFER;Erste Ziffer des Betrags vs. Benford-Verteilung;nicht benötigt;-;;✗;betrag;FiBuBetrag;✓;nicht implementiert (nicht benötigt)
+21;BENFORD_2ZIFFERN;Erste 2 Ziffern vs. Benford-Verteilung;nicht benötigt;-;;✗;betrag;FiBuBetrag;✓;nicht implementiert (nicht benötigt)
+22;RUNDER_BETRAG;Auffällig runde Beträge (z.B. 10.000);nicht benötigt;-;;✗;betrag;FiBuBetrag;✓;nicht implementiert (nicht benötigt)
+23;ERFASSER_ANOMALIE;Ein Erfasser bucht ungewöhnlich viel;nicht benötigt;-;;✗;erfasser;(nicht im Export);❌ erfasser fehlt;nicht implementiert (nicht benötigt)
+24;SPLIT_VERDACHT;Mehrere Buchungen knapp unter Schwellenwert;nicht benötigt;-;;✗;"betrag; kreditor; datum";"FiBuBetrag; Bezeichnung; Belegdatum";✓;nicht implementiert (nicht benötigt)
+25;SCHWELLENWERT_CLUSTER;Häufung von Beträgen nahe einem Schwellenwert;nicht benötigt;-;;✗;betrag;FiBuBetrag;✓;nicht implementiert (nicht benötigt)
+26;BELEG_LUECKE;Lücken in der Belegnummern-Sequenz;nicht benötigt;-;;✗;belegnummer;Belegnummer;✓;nicht implementiert (nicht benötigt)
+27;SOLL_GLEICH_HABEN;Soll- und Habenkonto sind identisch;nicht benötigt;-;;✗;"konto; konto_haben";"Kontonummer; (kein Gegenkonto)";⚠️ konto_haben fehlt;nicht implementiert (nicht benötigt)
+28;TEXT_KREDITOR_MISMATCH;Buchungstext passt nicht zum Kreditornamen;nicht benötigt;-;;✗;"buchungstext; kreditor";"Buchungstext; Bezeichnung";✓;nicht implementiert (nicht benötigt)
+29;FUZZY_KREDITOR;Ähnlich geschriebene Kreditornamen (Tippfehler?);nicht benötigt;-;;✗;kreditor;Bezeichnung;✓;nicht implementiert (nicht benötigt)

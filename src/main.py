@@ -23,6 +23,10 @@ from fastapi.responses import JSONResponse
 import redis.asyncio as aioredis
 
 from src.models import JobResponse, JobStatusResponse
+from src.logging_config import setup_logging, get_logger
+
+setup_logging()
+logger = get_logger("prefilter.api")
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 JOB_TTL   = int(os.environ.get("JOB_TTL_SECONDS", "3600"))   # 1 Stunde

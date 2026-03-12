@@ -26,7 +26,9 @@ User ──► Gradio UI │  app.py │──► Redis ──► Celery Worker(
 - **src/parser.py**: CSV/XLS-Parsing, Spalten-Mapping (COLUMN_ALIASES), Deutsche Zahlen/Datumsformate.
 - **src/config.py**: `AnalysisConfig` (Pydantic) — alle Schwellenwerte konfigurierbar.
 - **src/webhook.py**: `push_to_langdock()` mit 3 Retries via httpx.
+- **src/logging_config.py**: Zentrales structlog-Setup (JSON/Console via `LOG_FORMAT` ENV).
 - **docker-compose.yml**: 3 Services (ui, worker, redis), shared `uploads` Volume.
+- **.github/workflows/ci.yml**: CI Pipeline — Unit-Tests + Docker build + smoke test.
 
 ## Wichtige Konventionen
 
@@ -90,6 +92,15 @@ Alle Schwellenwerte sind über `AnalysisConfig` steuerbar (Pydantic mit `ge`/`le
 - `css=` und `theme=` gehören in `demo.launch()`, NICHT in `gr.Blocks()`
 - Alle anderen APIs (File, Slider, Button, Dataframe, Progress, Tabs) sind kompatibel
 
+## Structured Logging
+
+- **structlog** >= 24.1.0 für strukturiertes Logging (JSON/Console)
+- `src/logging_config.py`: `setup_logging()` + `get_logger(name)`
+- ENV-Steuerung:
+  - `LOG_FORMAT` = `json` (default) | `console`
+  - `LOG_LEVEL` = `INFO` (default) | `DEBUG` | `WARNING` | `ERROR`
+- Logger-Konvention: `prefilter.ui`, `prefilter.engine`, `prefilter.worker`, `prefilter.api`, `prefilter.webhook`
+
 ## Docker Compose
 
 ```bash
@@ -112,7 +123,7 @@ docker compose up -d --build --scale worker=4 # Mehr Worker
 ## Tests
 
 ```bash
-pytest tests/ -v                    # 51 Unit-Tests (ohne slow/integration)
+pytest tests/ -v                    # 64 Unit-Tests (ohne slow/integration)
 pytest tests/ -v -m slow            # Performance-Benchmark (500k Zeilen, <90s)
 pytest tests/ -v -m integration     # E2E mit Redis (docker compose up redis)
 ```
@@ -122,9 +133,9 @@ pytest tests/ -v -m integration     # E2E mit Redis (docker compose up redis)
 
 ## Bekannte offene Punkte
 
-1. **Single-Job-Parallelisierung** (HOCH): 500k-Zeilen-Jobs laufen sequentiell auf 1 Worker. Geplant: Celery chord (prepare → 14 Tests parallel → merge). Details in `prefilter_todo_v5.txt`.
-2. **FEHLENDE_MONATSBUCHUNG**: Logik in `src/tests/zeitreihe.py` verifizieren — unklar ob `all_periods` via `pd.period_range()` oder nur aus vorhandenen Buchungen erzeugt wird.
-3. **deploy.replicas** in docker-compose.yml ist irreführend (non-Swarm ignoriert es).
+1. **Single-Job-Parallelisierung** (ERLEDIGT): Celery chord Pipeline implementiert (worker.py v4.2).
+2. **FEHLENDE_MONATSBUCHUNG** (ERLEDIGT): Logik verifiziert — `pd.period_range()` wird korrekt genutzt, echte Lücken werden erkannt.
+3. **deploy.replicas** (ERLEDIGT): Aus docker-compose.yml entfernt.
 
 ## Häufige Fehlerquellen
 

@@ -26,9 +26,13 @@ import redis as redis_sync
 from celery import Celery, chord, group
 
 from src.config import AnalysisConfig
+from src.logging_config import setup_logging, get_logger
 from src.parser import read_upload, map_columns
 from src.engine import AnomalyEngine, NUM_TESTS, _ALL_TESTS, _TEST_BY_NAME
 from src.tests.base import EngineStats
+
+setup_logging()
+logger = get_logger("prefilter.worker")
 
 REDIS_URL         = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 REDIS_BACKEND_URL = REDIS_URL.replace("/0", "/1").replace("/2", "/1")

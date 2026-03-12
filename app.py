@@ -21,10 +21,11 @@ from celery import Celery
 
 from src.webhook import push_to_langdock
 from src.config import AnalysisConfig
+from src.logging_config import setup_logging, get_logger
 
 # ── Logging ──────────────────────────────────────────────────
-logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
-logger = logging.getLogger("prefilter")
+setup_logging()
+logger = get_logger("prefilter.ui")
 
 # ── Config ───────────────────────────────────────────────────
 REDIS_URL            = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
