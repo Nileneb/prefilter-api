@@ -38,16 +38,28 @@ __all__ = [
 
 # ── Column normalisation ────────────────────────────────────
 COLUMN_ALIASES = {
-    "datum":           ["datum", "date", "buchungsdatum", "belegdatum"],
-    "betrag":          ["betrag", "amount", "summe", "wert"],
-    "konto_soll":      ["konto_soll", "kontosoll", "soll", "sollkonto", "debit"],
-    "konto_haben":     ["konto_haben", "kontohaben", "haben", "habenkonto", "credit"],
-    "buchungstext":    ["buchungstext", "text", "beschreibung", "verwendungszweck"],
-    "belegnummer":     ["belegnummer", "beleg", "belegnr", "beleg_nr", "voucher"],
-    "kostenstelle":    ["kostenstelle", "kst", "cost_center"],
-    "kreditor":        ["kreditor", "lieferant", "vendor", "supplier", "creditor"],
-    "erfasser":        ["erfasser", "user", "benutzer", "ersteller", "created_by"],
-    "rechnungsdatum":  ["rechnungsdatum", "invoice_date", "rech_datum", "invoicedate"],
+    "datum":            ["datum", "date", "buchungsdatum", "belegdatum"],
+    "betrag":           ["betrag", "amount", "summe", "wert", "fibubetrag"],
+    "konto_soll":       ["konto_soll", "kontosoll", "soll", "sollkonto", "debit",
+                         "kontonummer"],
+    "konto_haben":      ["konto_haben", "kontohaben", "haben", "habenkonto", "credit"],
+    "buchungstext":     ["buchungstext", "text", "beschreibung", "verwendungszweck"],
+    "belegnummer":      ["belegnummer", "beleg", "belegnr", "beleg_nr", "voucher"],
+    "kostenstelle":     ["kostenstelle", "kst", "cost_center"],
+    "kreditor":         ["kreditor", "lieferant", "vendor", "supplier", "creditor",
+                         "bezeichnung"],
+    "erfasser":         ["erfasser", "user", "benutzer", "ersteller", "created_by"],
+    "rechnungsdatum":   ["rechnungsdatum", "invoice_date", "rech_datum", "invoicedate"],
+    # ── Diamant-Spalten ──────────────────────────────────────
+    "klasse":           ["klasse"],
+    "belegart":         ["belegart"],
+    "buchungsperiode":  ["buchungsperiode"],
+    "erfassungsdatum":  ["erfassungsdatum", "erfassungam"],
+    "kostentraeger":    ["kostentraeger", "kostentraeger"],
+    "projekt":          ["projekt", "project"],
+    "steuerschluessel": ["steuerschluessel", "steuerschluessel"],
+    "detailbetrag":     ["detailbetrag"],
+    "generalumgekehrt": ["generalumgekehrt"],
 }
 
 
@@ -178,11 +190,16 @@ def parse_date_series(series: pd.Series) -> pd.Series:
     Rückgabe: pd.Series[datetime64] mit pd.NaT für nicht-parseable Werte.
     """
     s = series.astype(str).str.strip()
+    # "NULL"-Strings als NaT behandeln
+    s = s.replace({"NULL": pd.NaT, "null": pd.NaT, "None": pd.NaT, "none": pd.NaT})
+    # SQL-Timestamp-Millisekunden abschneiden ("2023-12-15 07:24:06.000" → "2023-12-15 07:24:06")
+    s = s.str.replace(r'\.\d{1,6}$', '', regex=True)
     formats = [
         "%Y-%m-%d",
         "%d.%m.%Y",
         "%d.%m.%y",
         "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
         "%d.%m.%Y %H:%M:%S",
         "%d.%m.%Y %H:%M",
     ]
@@ -204,16 +221,27 @@ def read_upload(filepath: str) -> pd.DataFrame:
     """Read CSV / XLS / XLSX with auto-detection."""
     name = filepath.lower()
     if name.endswith(".xlsx"):
-        return pd.read_excel(filepath, engine="openpyxl", dtype=str)
+        df = pd.read_excel(filepath, engine="openpyxl", dtype=str)
+        return _clean_null_strings(df)
     if name.endswith(".xls"):
-        return pd.read_excel(filepath, engine="xlrd", dtype=str)
+        df = pd.read_excel(filepath, engine="xlrd", dtype=str)
+        return _clean_null_strings(df)
     with open(filepath, "r", encoding="utf-8-sig", errors="replace") as f:
         text = f.read()
-    for sep in [";", ",", "\t"]:
+    for sep in ["|", ";", ",", "\t"]:
         try:
             df = pd.read_csv(io.StringIO(text), sep=sep, dtype=str)
             if len(df.columns) >= 3:
-                return df
+                return _clean_null_strings(df)
         except Exception:
             continue
     raise ValueError("CSV konnte nicht geparst werden — mindestens 3 Spalten erwartet.")
+
+
+def _clean_null_strings(df: pd.DataFrame) -> pd.DataFrame:
+    """Ersetzt 'NULL'/'null'/'None' Strings durch echte NaN-Werte."""
+    null_vals = {"NULL", "null", "None", "none"}
+    mask = df.isin(null_vals)
+    if mask.any().any():
+        df = df.where(~mask, other=pd.NA)
+    return df

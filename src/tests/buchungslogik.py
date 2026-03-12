@@ -35,7 +35,11 @@ class Storno(AnomalyTest):
             txt.str.contains("gutschrift", na=False)
             & (df["_abs"] > gutschrift_schwelle)
         )
-        mask = hard_mask | neg_mask | gutschrift_mask
+        # Generalumgekehrt-Kennzeichen aus Diamant-Export
+        gu = df["generalumgekehrt"].astype(str).str.strip().str.lower()
+        gu_mask = gu.isin({"1", "true", "j", "ja", "yes", "x"})
+
+        mask = hard_mask | neg_mask | gutschrift_mask | gu_mask
         return self._flag(df, mask)
 
 
@@ -62,8 +66,14 @@ class RechnungsdatumPeriode(AnomalyTest):
     critical = False
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        rdatum   = parse_date_series(df["rechnungsdatum"])
+        rdatum = parse_date_series(df["rechnungsdatum"])
         has_both = df["_datum"].notna() & rdatum.notna()
+
+        # Fallback: Buchungsperiode nutzen wenn kein Rechnungsdatum vorhanden
+        if not has_both.any() and "buchungsperiode" in df.columns:
+            rdatum = parse_date_series(df["buchungsperiode"])
+            has_both = df["_datum"].notna() & rdatum.notna()
+
         if not has_both.any():
             return 0
         buch_period = df.loc[has_both, "_datum"].dt.to_period("M")

@@ -2,17 +2,33 @@
 Buchungs-Anomalie Pre-Filter — Betrags-Tests
 
 Tests:
-    BETRAG_ZSCORE          — Betrag > Z-Score-Schwelle
-    BETRAG_IQR             — Betrag > IQR-Fence
+    BETRAG_ZSCORE          — Betrag > Z-Score-Schwelle (je Kontoklasse)
+    BETRAG_IQR             — Betrag > IQR-Fence (je Kontoklasse)
     KONTO_BETRAG_ANOMALIE  — Betrag ist Ausreißer auf Kontoebene
 """
 
 from __future__ import annotations
 
 import pandas as pd
+import numpy as np
 
 from src.config import AnalysisConfig
 from src.tests.base import AnomalyTest, EngineStats
+
+
+def _kontoklasse(konto_soll: pd.Series) -> pd.Series:
+    """Bestimmt Kontoklasse aus der Kontonummer (erste Ziffer(n)).
+
+    Aufwand: 5-7xxx, Ertrag: 4xxx, Bestand: 0-3xxx
+    """
+    num = pd.to_numeric(
+        konto_soll.astype(str).str.strip().str.replace(r"\D", "", regex=True),
+        errors="coerce",
+    )
+    klasse = pd.Series("bestand", index=konto_soll.index)
+    klasse = klasse.where(~((num >= 40000) & (num < 50000)), "ertrag")
+    klasse = klasse.where(~((num >= 50000) & (num < 80000)), "aufwand")
+    return klasse
 
 
 class BetragZscore(AnomalyTest):
@@ -21,11 +37,24 @@ class BetragZscore(AnomalyTest):
     critical = True
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        if stats.b_std > 0:
-            z    = (df["_abs"] - stats.b_mean) / stats.b_std
-            mask = (df["_abs"] > 0) & (z > config.zscore_threshold)
-        else:
-            mask = pd.Series(False, index=df.index)
+        has_val = df["_abs"] > 0
+        if not has_val.any():
+            return self._flag(df, pd.Series(False, index=df.index))
+
+        klasse = _kontoklasse(df["konto_soll"])
+        mask = pd.Series(False, index=df.index)
+
+        for kl in klasse[has_val].unique():
+            sel = has_val & (klasse == kl)
+            vals = df.loc[sel, "_abs"]
+            if len(vals) < 2:
+                continue
+            mean = vals.mean()
+            std = vals.std()
+            if std > 0:
+                z = (df["_abs"] - mean) / std
+                mask = mask | (sel & (z > config.zscore_threshold))
+
         return self._flag(df, mask)
 
 
@@ -35,10 +64,25 @@ class BetragIqr(AnomalyTest):
     critical = False
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        if stats.b_iqr > 0:
-            mask = df["_abs"] > stats.b_fence
-        else:
-            mask = pd.Series(False, index=df.index)
+        has_val = df["_abs"] > 0
+        if not has_val.any():
+            return self._flag(df, pd.Series(False, index=df.index))
+
+        klasse = _kontoklasse(df["konto_soll"])
+        mask = pd.Series(False, index=df.index)
+
+        for kl in klasse[has_val].unique():
+            sel = has_val & (klasse == kl)
+            vals = df.loc[sel, "_abs"]
+            if len(vals) < 4:
+                continue
+            q1 = vals.quantile(0.25)
+            q3 = vals.quantile(0.75)
+            iqr = q3 - q1
+            if iqr > 0:
+                fence = q3 + config.iqr_factor * iqr
+                mask = mask | (sel & (df["_abs"] > fence))
+
         return self._flag(df, mask)
 
 

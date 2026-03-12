@@ -735,3 +735,159 @@ class TestEngineFullRun:
         )
         assert "stammdaten_report"       in result
         assert "fuzzy_kreditor_matches"  in result["stammdaten_report"]
+
+
+# ── v7-Tests (Diamant-Integration) ───────────────────────────────────────────
+
+class TestParserDiamantAliases:
+    """Testet Diamant-spezifische Spalten-Mappings."""
+
+    def test_diamant_column_mapping(self):
+        """Diamant-Spaltennamen werden korrekt auf kanonische Namen gemappt."""
+        df = pd.DataFrame({
+            "Belegdatum": ["2024-01-15"],
+            "FiBuBetrag": ["1000,00"],
+            "Kontonummer": ["4711"],
+            "Buchungstext": ["Test"],
+            "Belegnummer": ["001"],
+            "Bezeichnung": ["Lieferant A"],
+            "Klasse": ["K"],
+            "Generalumgekehrt": ["0"],
+        })
+        mapped = map_columns(df)
+        assert "datum" in mapped.columns
+        assert "betrag" in mapped.columns
+        assert "konto_soll" in mapped.columns
+        assert "kreditor" in mapped.columns
+        assert "klasse" in mapped.columns
+        assert "generalumgekehrt" in mapped.columns
+
+    def test_pipe_delimited_csv(self, tmp_path):
+        """Pipe-delimitierte CSV wird korrekt gelesen."""
+        csv_content = "Belegdatum|FiBuBetrag|Kontonummer|Buchungstext\n2024-01-15|1000.00|4711|Test\n"
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text(csv_content, encoding="utf-8")
+        df = read_upload(str(csv_file))
+        assert len(df) == 1
+        assert len(df.columns) >= 4
+
+    def test_null_string_handling(self, tmp_path):
+        """'NULL'-Strings werden als NaN/NA eingelesen."""
+        csv_content = "datum;betrag;kreditor\n2024-01-15;1000;NULL\n"
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text(csv_content, encoding="utf-8")
+        df = read_upload(str(csv_file))
+        assert pd.isna(df.iloc[0]["kreditor"])
+
+    def test_sql_timestamp_parsing(self):
+        """SQL-Timestamps mit Millisekunden werden korrekt geparst."""
+        from src.parser import parse_date_series
+        s = pd.Series(["2023-12-15 07:24:06.000", "2024-01-20 14:30:00.123"])
+        result = parse_date_series(s)
+        assert result.notna().all()
+        assert result.iloc[0].day == 15
+        assert result.iloc[1].day == 20
+
+
+class TestBetragByKontoklasse:
+    """BETRAG_ZSCORE und BETRAG_IQR rechnen jetzt getrennt pro Kontoklasse."""
+
+    def test_aufwandskonto_extreme_flagged(self):
+        """Extremer Betrag auf Aufwandskonto (5-7xxx) wird erkannt."""
+        betraege = ["100,00"] * 49 + ["100000,00"]
+        df = _make_df(
+            datum=["2024-01-15"] * 50,
+            betrag=betraege,
+            konto_soll=["65000"] * 50,
+            konto_haben=["1200"] * 50,
+            buchungstext=["Normal"] * 49 + ["Extrem"],
+            belegnummer=[f"{i:04d}" for i in range(50)],
+            erfasser=["User"] * 50,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t01_zscore()
+        assert engine.flag_counts["BETRAG_ZSCORE"] >= 1
+
+    def test_mixed_kontoklassen_separate_stats(self):
+        """Aufwand und Ertrag bekommen getrennte Statistiken —
+        ein Betrag der bei Aufwand normal wäre, kann bei Ertrag auffällig sein."""
+        # Aufwand: 50x 10000, Ertrag: 49x 100 + 1x 10000 (Ausreißer bei Ertrag)
+        n = 100
+        betraege = ["10000,00"] * 50 + ["100,00"] * 49 + ["10000,00"]
+        konten = ["60000"] * 50 + ["40000"] * 50
+        df = _make_df(
+            datum=["2024-01-15"] * n,
+            betrag=betraege,
+            konto_soll=konten,
+            konto_haben=["1200"] * n,
+            buchungstext=["Buchung"] * n,
+            belegnummer=[f"{i:04d}" for i in range(n)],
+            erfasser=["User"] * n,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t01_zscore()
+        # Der 10000-Betrag auf Ertragskonto sollte auffallen
+        assert engine.flag_counts["BETRAG_ZSCORE"] >= 1
+        # Prüfe dass nicht alle Aufwandsbuchungen geflaggt sind (die sind normal dort)
+        aufwand_flags = engine.df[
+            (engine.df["konto_soll"] == "60000") & engine.df["flag_BETRAG_ZSCORE"]
+        ]
+        assert len(aufwand_flags) == 0
+
+
+class TestGeneralumgekehrtStorno:
+    """Generalumgekehrt-Kennzeichen triggert STORNO-Flag."""
+
+    def test_generalumgekehrt_1_flags_storno(self):
+        """Generalumgekehrt='1' setzt STORNO-Flag."""
+        df = _make_df(
+            betrag=["500,00"],
+            buchungstext=["Normaler Text"],
+            generalumgekehrt=["1"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t15_storno()
+        assert engine.flag_counts["STORNO"] == 1
+
+    def test_generalumgekehrt_empty_no_storno(self):
+        """Leeres Generalumgekehrt löst keinen STORNO-Flag aus."""
+        df = _make_df(
+            betrag=["500,00"],
+            buchungstext=["Normaler Text"],
+            generalumgekehrt=[""],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t15_storno()
+        assert engine.flag_counts["STORNO"] == 0
+
+
+class TestRechnungsdatumBuchungsperiodeFallback:
+    """RECHNUNGSDATUM_PERIODE nutzt Buchungsperiode als Fallback."""
+
+    def test_buchungsperiode_mismatch_flagged(self):
+        """Buchungsperiode ≠ Belegdatum → Flag (wenn kein Rechnungsdatum)."""
+        df = _make_df(
+            datum=["2024-03-15"],
+            buchungsperiode=["2024-01-02"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t23_rechnungsdatum_periode()
+        assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 1
+
+    def test_rechnungsdatum_takes_priority(self):
+        """Wenn Rechnungsdatum vorhanden, wird Buchungsperiode ignoriert."""
+        df = _make_df(
+            datum=["2024-03-15"],
+            rechnungsdatum=["2024-03-01"],
+            buchungsperiode=["2024-01-02"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t23_rechnungsdatum_periode()
+        # Rechnungsdatum gleicher Monat → kein Flag
+        assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 0

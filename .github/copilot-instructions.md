@@ -2,7 +2,7 @@
 
 ## Projektübersicht
 
-Buchungs-Anomalie Pre-Filter v4.1: Gradio-Web-App die CSV/XLS/XLSX-Buchungsdaten durch 14 statistische Anomalie-Tests laufen lässt und verdächtige Buchungen an einen Langdock Agent weiterleitet. Betrieb ausschließlich via Docker Compose.
+Buchungs-Anomalie Pre-Filter v4.3: Gradio-Web-App die CSV/XLS/XLSX-Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) durch 14 statistische Anomalie-Tests laufen lässt und verdächtige Buchungen an einen Langdock Agent weiterleitet. Betrieb ausschließlich via Docker Compose.
 
 ## Architektur
 
@@ -23,7 +23,7 @@ User ──► Gradio UI │  app.py │──► Redis ──► Celery Worker(
 - **src/main.py**: FastAPI REST API + WebSocket (`/api/jobs`, `/ws/jobs/{id}`, `/health`). Zweiter Einstiegspunkt, gleicher Worker.
 - **src/worker.py**: Celery-Task `prefilter.analyze`. Liest Datei, baut `AnomalyEngine`, veröffentlicht Progress via Redis Pub/Sub.
 - **src/engine.py**: Orchestriert 14 Tests aus `src/tests/`. Kein `iterrows()`, alles vektorisiert.
-- **src/parser.py**: CSV/XLS-Parsing, Spalten-Mapping (COLUMN_ALIASES), Deutsche Zahlen/Datumsformate.
+- **src/parser.py**: CSV/XLS-Parsing mit Pipe-Delimiter-Support, Spalten-Mapping (COLUMN_ALIASES inkl. Diamant-Mappings), Deutsche Zahlen/Datumsformate, SQL-Timestamps, NULL-String-Handling.
 - **src/config.py**: `AnalysisConfig` (Pydantic) — alle Schwellenwerte konfigurierbar.
 - **src/webhook.py**: `push_to_langdock()` mit 3 Retries via httpx.
 - **src/logging_config.py**: Zentrales structlog-Setup (JSON/Console via `LOG_FORMAT` ENV).
@@ -60,9 +60,9 @@ Jeder Test setzt `df[f"flag_{name}"] = True/False` in-place. Keine Listen-in-Zel
 
 | Modul | Tests | Kritisch |
 |---|---|---|
-| betrag.py | BETRAG_ZSCORE (2.0), BETRAG_IQR (1.5), KONTO_BETRAG_ANOMALIE (2.0) | ✓, -, ✓ |
+| betrag.py | BETRAG_ZSCORE (2.0, je Kontoklasse), BETRAG_IQR (1.5, je Kontoklasse), KONTO_BETRAG_ANOMALIE (2.0) | ✓, -, ✓ |
 | duplikate.py | NEAR_DUPLICATE (2.0), DOPPELTE_BELEGNUMMER (2.0), BELEG_KREDITOR_DUPLIKAT (2.5) | ✓, ✓, ✓ |
-| buchungslogik.py | STORNO (1.5), LEERER_BUCHUNGSTEXT (1.0), RECHNUNGSDATUM_PERIODE (1.5), BUCHUNGSTEXT_PERIODE (1.0) | ✓, -, -, - |
+| buchungslogik.py | STORNO (1.5, +Generalumgekehrt), LEERER_BUCHUNGSTEXT (1.0), RECHNUNGSDATUM_PERIODE (1.5, Buchungsperiode-Fallback), BUCHUNGSTEXT_PERIODE (1.0) | ✓, -, -, - |
 | kreditor.py | NEUER_KREDITOR_HOCH (2.5), VELOCITY_ANOMALIE (1.5) | ✓, - |
 | zeitreihe.py | MONATS_ENTWICKLUNG (1.5), FEHLENDE_MONATSBUCHUNG (1.0) | -, - |
 
@@ -123,7 +123,7 @@ docker compose up -d --build --scale worker=4 # Mehr Worker
 ## Tests
 
 ```bash
-pytest tests/ -v                    # 64 Unit-Tests (ohne slow/integration)
+pytest tests/ -v                    # 74 Unit-Tests (ohne slow/integration)
 pytest tests/ -v -m slow            # Performance-Benchmark (500k Zeilen, <90s)
 pytest tests/ -v -m integration     # E2E mit Redis (docker compose up redis)
 ```
@@ -131,11 +131,34 @@ pytest tests/ -v -m integration     # E2E mit Redis (docker compose up redis)
 - `pyproject.toml`: `addopts = "-m 'not slow and not integration'"`
 - Tests importieren von `src.*`, niemals von `modules.*` (gelöscht)
 
+## Diamant-Export-Integration (v7)
+
+### Spalten-Mapping
+Parser erkennt Diamant-Spaltennamen automatisch:
+- `Belegdatum` → datum, `FiBuBetrag` → betrag, `Kontonummer` → konto_soll
+- `Bezeichnung` → kreditor, `Klasse` → klasse (K/S/D)
+- `Buchungsperiode` → buchungsperiode, `ErfassungAm` → erfassungsdatum
+- `Generalumgekehrt` → generalumgekehrt, `Detailbetrag` → detailbetrag
+
+### Kontoklassen-Differenzierung
+BETRAG_ZSCORE und BETRAG_IQR rechnen getrennt nach Kontoklasse:
+- Aufwand (5-7xxx): eigene Verteilung
+- Ertrag (4xxx): eigene Verteilung
+- Bestand (0-3xxx): eigene Verteilung
+
+### Generalumgekehrt
+Wenn `generalumgekehrt` = "1"/"true"/"J" → automatisch STORNO-Flag.
+
+### Buchungsperiode-Fallback
+Rechnungsdatum_Periode nutzt `buchungsperiode` als Fallback wenn kein `rechnungsdatum` vorhanden.
+
 ## Bekannte offene Punkte
 
 1. **Single-Job-Parallelisierung** (ERLEDIGT): Celery chord Pipeline implementiert (worker.py v4.2).
 2. **FEHLENDE_MONATSBUCHUNG** (ERLEDIGT): Logik verifiziert — `pd.period_range()` wird korrekt genutzt, echte Lücken werden erkannt.
 3. **deploy.replicas** (ERLEDIGT): Aus docker-compose.yml entfernt.
+4. **Diamant-Integration** (ERLEDIGT v7): Parser, Betrags-Tests, Storno, Rechnungsdatum.
+5. **VELOCITY_ANOMALIE Erfasser**: Wartet auf Diamant-Erfasser-Spalte im Export.
 
 ## Häufige Fehlerquellen
 
