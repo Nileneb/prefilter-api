@@ -6,7 +6,7 @@
 		"docker-compose.yml"
 	],
 
-	"service": "prefilter",
+	"service": "ui",
 
 	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
 

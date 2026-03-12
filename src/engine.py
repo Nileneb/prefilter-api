@@ -163,27 +163,40 @@ class AnomalyEngine:
             df[output_mask]
             .sort_values("_score", ascending=False)
             .head(self.config.max_output_rows)
+            .copy()
         )
 
-        # Flag-Strings vektorisiert (nur über gefilterte Teilmenge)
-        flag_str_series = verdaechtig.apply(
-            lambda row: "|".join(n for n in _FLAG_NAMES if row.get(f"flag_{n}", False)),
-            axis=1,
-        )
+        # Flag-Strings vektorisiert via boolean matrix dot-product
+        flag_cols = [f"flag_{n}" for n in _FLAG_NAMES]
+        flag_matrix = verdaechtig[flag_cols].values
+        flag_names = _FLAG_NAMES
+        verdaechtig["anomaly_flags"] = [
+            "|".join(n for n, v in zip(flag_names, row) if v)
+            for row in flag_matrix
+        ]
 
         out_cols = [
             "datum", "konto_soll", "konto_haben", "betrag",
             "buchungstext", "belegnummer", "kostenstelle", "kreditor", "erfasser",
         ]
-        rows: list[dict] = []
-        for i, row in verdaechtig.iterrows():
-            r = {c: str(row.get(c, "")) for c in out_cols}
-            r["betrag"]        = row["_betrag"]
-            r["anomaly_score"] = round(row["_score"], 2)
-            r["anomaly_flags"] = flag_str_series.at[i]
-            if pd.notna(row["_datum"]):
-                r["datum"] = row["_datum"].strftime("%Y-%m-%d")
-            rows.append(r)
+
+        # Vektorisiert: datum formatieren wo vorhanden
+        has_datum = verdaechtig["_datum"].notna()
+        verdaechtig.loc[has_datum, "datum"] = (
+            verdaechtig.loc[has_datum, "_datum"].dt.strftime("%Y-%m-%d")
+        )
+
+        # Betrag durch geparsten Wert ersetzen, Score runden
+        verdaechtig["betrag"] = verdaechtig["_betrag"]
+        verdaechtig["anomaly_score"] = verdaechtig["_score"].round(2)
+
+        # Alle Spalten als String (außer betrag + anomaly_score)
+        for c in out_cols:
+            if c != "betrag":
+                verdaechtig[c] = verdaechtig[c].astype(str)
+
+        # Dict-Output ohne iterrows
+        rows = verdaechtig[out_cols + ["anomaly_score", "anomaly_flags"]].to_dict("records")
 
         total     = len(df)
         n_verd    = int(output_mask.sum())

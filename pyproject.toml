@@ -38,10 +38,15 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*", "modules*"]
+include = ["src*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "slow: Performance-Tests mit großen Datensätzen (500k Zeilen)",
+    "integration: Integration-Tests die Redis/Celery voraussetzen",
+]
+addopts = "-m 'not slow and not integration'"

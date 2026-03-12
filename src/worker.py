@@ -41,6 +41,13 @@ celery_app.conf.update(
     accept_content    = ["json"],
     task_track_started = True,
     worker_prefetch_multiplier = 1,
+    # Große Datensätze: Task erst nach Abschluss aus Queue entfernen
+    # → bei Worker-Crash wird der Task erneut verteilt
+    task_acks_late    = True,
+    task_reject_on_worker_lost = True,
+    # Soft/Hard Time-Limits: 10min soft, 15min hard (für 500k+ Zeilen)
+    task_soft_time_limit = 600,
+    task_time_limit      = 900,
 )
 
 

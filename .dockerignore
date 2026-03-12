@@ -6,4 +6,3 @@ __pycache__
 *.xls
 *.xlsx
 tests/
-main.py
