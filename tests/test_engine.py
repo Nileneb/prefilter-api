@@ -230,20 +230,20 @@ class TestEngineStorno:
 
 class TestEngineDoppelteBelegnummer:
     def test_duplicate_flagged(self):
-        """3+ Zeilen mit gleicher Belegnr + Konto + Betrag → flaggen."""
+        """5+ Zeilen mit gleicher Belegnr + Konto + Betrag → flaggen."""
         df = _make_df(
-            datum=["2024-01-15", "2024-01-16", "2024-01-17"],
-            betrag=["100,00", "100,00", "100,00"],
-            belegnummer=["001", "001", "001"],
-            konto_soll=["4711", "4711", "4711"],
-            konto_haben=["1200", "1200", "1200"],
-            buchungstext=["A", "B", "C"],
-            erfasser=["User", "User", "User"],
+            datum=["2024-01-15", "2024-01-16", "2024-01-17", "2024-01-18", "2024-01-19"],
+            betrag=["100,00", "100,00", "100,00", "100,00", "100,00"],
+            belegnummer=["001", "001", "001", "001", "001"],
+            konto_soll=["4711", "4711", "4711", "4711", "4711"],
+            konto_haben=["1200", "1200", "1200", "1200", "1200"],
+            buchungstext=["A", "B", "C", "D", "E"],
+            erfasser=["User", "User", "User", "User", "User"],
         )
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t13_doppelte_belegnummer()
-        assert engine.flag_counts["DOPPELTE_BELEGNUMMER"] == 3
+        assert engine.flag_counts["DOPPELTE_BELEGNUMMER"] == 5
 
     def test_soll_haben_pair_not_flagged(self):
         """Soll/Haben-Paar mit gleicher Belegnr aber verschiedenen Konten → NICHT flaggen."""
@@ -264,21 +264,21 @@ class TestEngineDoppelteBelegnummer:
 
 class TestEngineBelegKreditorDuplikat:
     def test_same_beleg_same_kreditor(self):
-        """Gleiche Belegnr. + gleicher Kreditor + gleicher Betrag → flaggen."""
+        """Gleiche Belegnr. + gleicher Kreditor + gleicher Betrag (>=3) → flaggen."""
         df = _make_df(
-            datum=["2024-01-15", "2024-01-16"],
-            betrag=["500,00", "500,00"],
-            belegnummer=["INV-001", "INV-001"],
-            kreditor=["Lieferant A", "Lieferant A"],
-            konto_soll=["4711", "4720"],
-            konto_haben=["1200", "1200"],
-            buchungstext=["Einkauf", "Einkauf 2"],
-            erfasser=["User", "User"],
+            datum=["2024-01-15", "2024-01-16", "2024-01-17"],
+            betrag=["500,00", "500,00", "500,00"],
+            belegnummer=["INV-001", "INV-001", "INV-001"],
+            kreditor=["Lieferant A", "Lieferant A", "Lieferant A"],
+            konto_soll=["4711", "4720", "4730"],
+            konto_haben=["1200", "1200", "1200"],
+            buchungstext=["Einkauf", "Einkauf 2", "Einkauf 3"],
+            erfasser=["User", "User", "User"],
         )
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t14_beleg_kreditor_duplikat()
-        assert engine.flag_counts["BELEG_KREDITOR_DUPLIKAT"] == 2
+        assert engine.flag_counts["BELEG_KREDITOR_DUPLIKAT"] == 3
 
     def test_same_kreditor_amount_within_7days(self):
         """Gleicher Kreditor + Betrag + ≤7 Tage → flaggen."""
