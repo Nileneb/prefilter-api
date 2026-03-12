@@ -27,19 +27,27 @@ class Storno(AnomalyTest):
         gutschrift_schwelle = (
             stats.b_mean + stats.b_std if stats.b_std > 0 else float("inf")
         )
-        hard_mask       = txt.str.contains(
+
+        # Textbasierte Erkennung (zuverlässig)
+        hard_mask = txt.str.contains(
             r"storno|korrektur|r[uü]ckbuchung", regex=True, na=False
         )
-        neg_mask        = df["_betrag"] < 0
+
+        # ENTFERNT: neg_mask = df["_betrag"] < 0
+        # Negative Beträge sind in Soll/Haben-Logik NORMAL!
+        # Storno erkennt man am Text oder am Generalumgekehrt-Flag.
+
         gutschrift_mask = (
             txt.str.contains("gutschrift", na=False)
             & (df["_abs"] > gutschrift_schwelle)
         )
+
         # Generalumgekehrt-Kennzeichen aus Diamant-Export
-        gu = df["generalumgekehrt"].astype(str).str.strip().str.lower()
+        gu = df.get("generalumgekehrt", pd.Series("", index=df.index))
+        gu = gu.astype(str).str.strip().str.lower()
         gu_mask = gu.isin({"1", "true", "j", "ja", "yes", "x"})
 
-        mask = hard_mask | neg_mask | gutschrift_mask | gu_mask
+        mask = hard_mask | gutschrift_mask | gu_mask
         return self._flag(df, mask)
 
 
@@ -50,7 +58,7 @@ class LeererBuchungstext(AnomalyTest):
 
     _GENERIC = frozenset({
         "diverse", "verschiedenes", "sonstiges", "test",
-        "korrektur", "umbuchung", "xxx", "---", "...", "k.a.",
+        "xxx", "---", "...", "k.a.",
         "keine angabe", "n/a", "na", "tbd", "todo",
     })
 
@@ -78,7 +86,14 @@ class RechnungsdatumPeriode(AnomalyTest):
             return 0
         buch_period = df.loc[has_both, "_datum"].dt.to_period("M")
         rech_period = rdatum.loc[has_both].dt.to_period("M")
-        mask_inner  = rech_period != buch_period
+
+        # Nur flaggen wenn Differenz > 2 Monate (normale Abgrenzung ignorieren)
+        diff_months = (
+            (rech_period.dt.year - buch_period.dt.year) * 12
+            + (rech_period.dt.month - buch_period.dt.month)
+        ).abs()
+        mask_inner = diff_months > 2
+
         flagged_idx = buch_period.index[mask_inner]
         df.loc[flagged_idx, f"flag_{self.name}"] = True
         return len(flagged_idx)

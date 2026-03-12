@@ -37,6 +37,11 @@ class VelocityAnomalie(AnomalyTest):
     critical = False
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
+        # Guard: Ohne echte Erfasser-Daten ist der Test sinnlos
+        erfasser = df["erfasser"].astype(str).str.strip()
+        if (erfasser == "").all() or erfasser.nunique() < 2:
+            return 0
+
         has_kred_date = (
             df["kreditor"].astype(str).str.strip() != ""
         ) & df["_datum"].notna()

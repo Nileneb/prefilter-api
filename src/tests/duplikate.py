@@ -24,28 +24,48 @@ class NearDuplicate(AnomalyTest):
         flagged: set[int] = set()
         window = config.near_duplicate_days
 
-        for _, grp in df.groupby(["_abs", "konto_soll", "konto_haben"], sort=False, observed=True):
-            if len(grp) < 2:
-                continue
+        # Gruppierung: Betrag + Konto + Kreditor (statt Konto+Gegenkonto)
+        # Das unterscheidet z.B. 100 Gehälter an verschiedene Personen
+        kred = df["kreditor"].astype(str).str.strip()
+        has_kred = kred != ""
 
-            undated = grp[grp["_datum"].isna()]
-            if len(undated) >= 2:
-                flagged.update(undated.index)
+        # Mit Kreditor: Betrag + Konto + Kreditor
+        if has_kred.any():
+            for _, grp in df[has_kred].groupby(
+                ["_abs", "konto_soll", "kreditor"], sort=False, observed=True
+            ):
+                if len(grp) < 2:
+                    continue
+                self._flag_near_window(grp, window, flagged)
 
-            dated = grp[grp["_datum"].notna()].sort_values("_datum")
-            if len(dated) < 2:
-                continue
-
-            # Vektorisiert: Tages-Differenz zum Vorgänger
-            diffs = dated["_datum"].diff().dt.days
-            close_mask = diffs.fillna(window + 1) <= window
-            # Auch die Vorgänger-Zeile jedes nahen Paares flaggen
-            prev_mask = close_mask.shift(-1, fill_value=False)
-            flagged.update(dated.index[close_mask | prev_mask])
+        # Ohne Kreditor: Betrag + Konto + Buchungstext (Fallback)
+        no_kred = ~has_kred
+        if no_kred.any():
+            for _, grp in df[no_kred].groupby(
+                ["_abs", "konto_soll", "buchungstext"], sort=False, observed=True
+            ):
+                if len(grp) < 2:
+                    continue
+                self._flag_near_window(grp, window, flagged)
 
         if flagged:
             df.loc[list(flagged), f"flag_{self.name}"] = True
         return len(flagged)
+
+    @staticmethod
+    def _flag_near_window(grp: pd.DataFrame, window: int, flagged: set) -> None:
+        undated = grp[grp["_datum"].isna()]
+        if len(undated) >= 2:
+            flagged.update(undated.index)
+
+        dated = grp[grp["_datum"].notna()].sort_values("_datum")
+        if len(dated) < 2:
+            return
+
+        diffs = dated["_datum"].diff().dt.days
+        close_mask = diffs.fillna(window + 1) <= window
+        prev_mask = close_mask.shift(-1, fill_value=False)
+        flagged.update(dated.index[close_mask | prev_mask])
 
 
 class DoppelteBelegnummer(AnomalyTest):
@@ -55,7 +75,9 @@ class DoppelteBelegnummer(AnomalyTest):
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         beleg = df["belegnummer"].astype(str).str.strip()
-        mask  = (beleg != "") & beleg.duplicated(keep=False)
+        # Echtes Duplikat: gleiche Belegnr + gleiches Konto + gleicher Betrag
+        key = beleg + "|" + df["konto_soll"].astype(str) + "|" + df["_betrag"].astype(str)
+        mask = (beleg != "") & key.duplicated(keep=False)
         return self._flag(df, mask)
 
 
@@ -70,17 +92,22 @@ class BelegKreditorDuplikat(AnomalyTest):
         kred    = df["kreditor"].astype(str).str.strip()
         window  = config.beleg_kreditor_days
 
-        # Level 1: gleiche Belegnr. + gleicher Kreditor (vektorisiert)
-        has_both = (beleg != "") & (kred != "")
-        if has_both.any():
-            bk          = beleg + "|" + kred
-            bk_dup_mask = has_both & bk.duplicated(keep=False)
-            flagged.update(df.index[bk_dup_mask])
+        # Level 1: gleiche Belegnr + gleicher Kreditor + GLEICHER BETRAG
+        # Verschiedene Beträge auf gleicher Belegnr = normale Aufschlüsselung!
+        has_all = (beleg != "") & (kred != "")
+        if has_all.any():
+            bkb = beleg + "|" + kred + "|" + df["_betrag"].astype(str)
+            bkb_dup_mask = has_all & bkb.duplicated(keep=False)
+            flagged.update(df.index[bkb_dup_mask])
 
         # Level 2: gleicher Kreditor + gleicher Betrag + Datum ≤ window Tage
-        has_ka = (kred != "") & (df["_abs"] > 0)
-        for _, grp in df.loc[has_ka].groupby(["kreditor", "_abs"], sort=False, observed=True):
+        # ABER: unterschiedliche Belegnummern (sonst schon oben gefangen)
+        has_ka = (kred != "") & (df["_abs"] > 0) & (beleg != "")
+        for _, grp in df.loc[has_ka].groupby(["kreditor", "_betrag"], sort=False, observed=True):
             if len(grp) < 2:
+                continue
+            # Nur wenn VERSCHIEDENE Belegnummern
+            if grp["belegnummer"].nunique() < 2:
                 continue
             dated = grp[grp["_datum"].notna()].sort_values("_datum")
             if len(dated) < 2:
@@ -91,8 +118,10 @@ class BelegKreditorDuplikat(AnomalyTest):
                 for j in range(i + 1, len(dvals)):
                     if (dvals[j] - dvals[i]).days > window:
                         break
-                    flagged.add(idxs[i])
-                    flagged.add(idxs[j])
+                    # Nur flaggen wenn unterschiedliche Belegnummer
+                    if dated.loc[idxs[i], "belegnummer"] != dated.loc[idxs[j], "belegnummer"]:
+                        flagged.add(idxs[i])
+                        flagged.add(idxs[j])
 
         if flagged:
             df.loc[list(flagged), f"flag_{self.name}"] = True

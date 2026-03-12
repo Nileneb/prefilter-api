@@ -187,8 +187,9 @@ class TestEngineNearDuplicate:
             betrag=["1000,00", "1000,00"],
             konto_soll=["4711", "4711"],
             konto_haben=["1200", "1200"],
-            buchungstext=["A", "B"],
+            buchungstext=["A", "A"],
             belegnummer=["001", "002"],
+            kreditor=["Lieferant X", "Lieferant X"],
             erfasser=["User", "User"],
         )
         engine = AnomalyEngine(df)
@@ -229,12 +230,12 @@ class TestEngineStorno:
 
 class TestEngineDoppelteBelegnummer:
     def test_duplicate_flagged(self):
-        """Doppelte Belegnummern → beide Zeilen flaggen."""
+        """Doppelte Belegnummern mit gleichem Konto+Betrag → beide Zeilen flaggen."""
         df = _make_df(
             datum=["2024-01-15", "2024-01-16"],
-            betrag=["100,00", "200,00"],
+            betrag=["100,00", "100,00"],
             belegnummer=["001", "001"],
-            konto_soll=["4711", "4720"],
+            konto_soll=["4711", "4711"],
             konto_haben=["1200", "1200"],
             buchungstext=["A", "B"],
             erfasser=["User", "User"],
@@ -247,10 +248,10 @@ class TestEngineDoppelteBelegnummer:
 
 class TestEngineBelegKreditorDuplikat:
     def test_same_beleg_same_kreditor(self):
-        """Gleiche Belegnr. + gleicher Kreditor → flaggen."""
+        """Gleiche Belegnr. + gleicher Kreditor + gleicher Betrag → flaggen."""
         df = _make_df(
             datum=["2024-01-15", "2024-01-16"],
-            betrag=["500,00", "700,00"],
+            betrag=["500,00", "500,00"],
             belegnummer=["INV-001", "INV-001"],
             kreditor=["Lieferant A", "Lieferant A"],
             konto_soll=["4711", "4720"],
@@ -333,13 +334,16 @@ class TestEngineVelocityAnomalie:
         """Kreditor mit plötzlichem Monats-Spike → flaggen."""
         dates     = []
         kreditors = []
+        erfassers = []
         for m in range(1, 6):
             for _ in range(2):
                 dates.append(f"2024-{m:02d}-15")
                 kreditors.append("Lieferant X")
+                erfassers.append("UserA" if m % 2 == 0 else "UserB")
         for _ in range(10):
             dates.append("2024-06-15")
             kreditors.append("Lieferant X")
+            erfassers.append("UserA")
 
         n  = len(dates)
         df = _make_df(
@@ -350,7 +354,7 @@ class TestEngineVelocityAnomalie:
             buchungstext=["Bestellung"] * n,
             belegnummer=[f"{i:04d}" for i in range(n)],
             kreditor=kreditors,
-            erfasser=["User"] * n,
+            erfasser=erfassers,
         )
         engine = AnomalyEngine(df)
         engine._stats()
@@ -362,10 +366,10 @@ class TestEngineVelocityAnomalie:
 
 class TestEngineRechnungsdatumPeriode:
     def test_different_period_flagged(self):
-        """Rechnungsdatum in anderem Monat als Buchungsdatum → flaggen."""
+        """Rechnungsdatum >2 Monate abweichend → flaggen."""
         df = _make_df(
-            datum=["2024-03-15"],
-            rechnungsdatum=["2024-01-10"],  # Januar ≠ März
+            datum=["2024-06-15"],
+            rechnungsdatum=["2024-01-10"],  # Januar vs Juni = 5 Monate Differenz
         )
         engine = AnomalyEngine(df)
         engine._stats()
@@ -869,9 +873,9 @@ class TestRechnungsdatumBuchungsperiodeFallback:
     """RECHNUNGSDATUM_PERIODE nutzt Buchungsperiode als Fallback."""
 
     def test_buchungsperiode_mismatch_flagged(self):
-        """Buchungsperiode ≠ Belegdatum → Flag (wenn kein Rechnungsdatum)."""
+        """Buchungsperiode >2 Monate abweichend → Flag (wenn kein Rechnungsdatum)."""
         df = _make_df(
-            datum=["2024-03-15"],
+            datum=["2024-06-15"],
             buchungsperiode=["2024-01-02"],
         )
         engine = AnomalyEngine(df)
