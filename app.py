@@ -70,7 +70,8 @@ def _format_result(result: dict, webhook_url: str) -> tuple:
     summary = (
         f"Analyse abgeschlossen\n\n"
         f"Gesamt: {stats['total_input']} Buchungen\n"
-        f"Verdaechtig: {stats['total_output']} ({stats['filter_ratio']})\n"
+        f"Verdaechtig: {stats['total_suspicious']} ({stats['filter_ratio']})\n"
+        f"Ausgegeben: {stats['total_output']} (Top nach Score)\n"
         f"Avg Score: {stats['avg_score']}\n\n"
         f"Buchungs-Flags:\n{flag_str}\n"
     )
