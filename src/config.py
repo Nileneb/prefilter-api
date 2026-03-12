@@ -2,7 +2,7 @@
 Buchungs-Anomalie Pre-Filter — Konfiguration
 
 Alle konfigurierbaren Schwellenwerte in einem Pydantic-Modell.
-Defaults entsprechen den bisherigen Hardcode-Werten in modules/engine.py.
+Defaults entsprechen den bisherigen Hardcode-Werten in src/engine.py.
 """
 
 from pydantic import BaseModel, Field

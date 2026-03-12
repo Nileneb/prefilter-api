@@ -1,17 +1,16 @@
 """
-Buchungs-Anomalie Pre-Filter — Anomaly Engine v4.1
+Buchungs-Anomalie Pre-Filter — Anomaly Engine v4.2
 
 Orchestriert alle 14 Test-Module aus src/tests/*.
 Vollständig vektorisiert, kein iterrows(), kein O(n²).
 
-Rückwärtskompatibel mit modules/engine.py:
-  - Gleiche __init__(df) Signatur
-  - Gleiches run() → dict Rückgabeformat
-  - engine.df, engine.logs, engine.flag_counts bleiben öffentlich
-
-Neu gegenüber modules/engine.py:
-  - Optionaler config: AnalysisConfig Parameter (konfigurierbare Schwellenwerte)
-  - Optionaler cancel_check: Callable[[], bool] (Stop-Button, Phase 3)
+Public API:
+  - AnomalyEngine(df, config, cancel_check)
+  - engine.run() → dict
+  - engine.run_single_test(test_name, stats) → flagged indices
+  - engine.compute_stats() → EngineStats
+  - engine.apply_flags_and_export(flag_results) → dict
+  - _ALL_TESTS, _TEST_BY_NAME, NUM_TESTS, WEIGHTS, CRITICAL_FLAGS
 """
 
 from __future__ import annotations
@@ -124,6 +123,38 @@ class AnomalyEngine:
             f"Q1={q1:.0f}, Q3={q3:.0f}, IQR={stats.b_iqr:.0f}, Fence={stats.b_fence:.0f}"
         )
         return stats
+
+    def compute_stats(self) -> EngineStats:
+        """Public: berechnet und cached EngineStats."""
+        self._stats_cache = self._compute_stats()
+        return self._stats_cache
+
+    def compute_stats_dict(self) -> dict:
+        """Berechnet Stats und gibt sie als serialisierbares dict zurück."""
+        stats = self.compute_stats()
+        return stats.to_dict()
+
+    def run_single_test(self, test_name: str, stats: EngineStats) -> list[int]:
+        """Führt einen einzelnen Test aus, gibt geflaggte Indizes zurück."""
+        test = _TEST_BY_NAME[test_name]
+        count = test.run(self.df, stats, self.config)
+        self.flag_counts[test_name] = count
+        flagged = self.df.index[self.df[f"flag_{test_name}"]].tolist()
+        return flagged
+
+    def apply_flags_and_export(self, flag_results: list[dict]) -> dict:
+        """Setzt Flags aus externen Ergebnissen, berechnet Scores, exportiert.
+
+        flag_results: Liste von {test_name: str, flagged: list[int], count: int}
+        """
+        for r in flag_results:
+            name = r["test_name"]
+            flagged = r["flagged"]
+            self.flag_counts[name] = r["count"]
+            if flagged:
+                self.df.loc[flagged, f"flag_{name}"] = True
+        self._compute_scores()
+        return self._export()
 
     def _compute_scores(self) -> None:
         score = pd.Series(0.0, index=self.df.index)
@@ -240,7 +271,7 @@ class AnomalyEngine:
     _TEST_BY_NAME: dict = {}   # populated lazily below class
 
     def _stats(self) -> None:
-        """Compat: compute and cache stats (matches modules/engine.py API)."""
+        """Compat: compute and cache stats."""
         self._stats_cache = self._compute_stats()
 
     def _run_named_test(self, name: str) -> None:

@@ -97,15 +97,21 @@ class FehlendeMonatsbuchung(AnomalyTest):
         if len(all_periods) < 3:
             return 0
 
+        # Volle Zeitspanne — nur so werden echte Lücken erkannt
+        full_range = list(pd.period_range(all_periods[0], all_periods[-1], freq="M"))
+
+        # Mindest-Zeitfenster: < 6 Monate → zu kurz für aussagekräftige Lücken
+        if len(full_range) < 6:
+            return 0
+
         konto_month_cnt = subset.groupby("konto_soll")["_ym"].nunique()
-        min_active      = max(3, len(all_periods) * config.fehlende_buchung_min_quote)
+        # min_active basiert auf voller Zeitspanne, nicht nur auf vorhandenen Monaten
+        min_active      = max(3, len(full_range) * config.fehlende_buchung_min_quote)
         regular         = konto_month_cnt[konto_month_cnt >= min_active].index
 
         if regular.empty:
             return 0
 
-        # Volle Zeitspanne — nur so werden echte Lücken erkannt
-        full_range = list(pd.period_range(all_periods[0], all_periods[-1], freq="M"))
         prev_of    = {p: full_range[i - 1] for i, p in enumerate(full_range) if i > 0}
         next_of    = {p: full_range[i + 1] for i, p in enumerate(full_range[:-1])}
 

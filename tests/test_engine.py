@@ -517,6 +517,84 @@ class TestEngineFehlendeMonatsbuchung:
         engine._t26_fehlende_monatsbuchung()
         assert engine.flag_counts["FEHLENDE_MONATSBUCHUNG"] == 0
 
+    def test_short_timespan_not_flagged(self):
+        """Datensatz mit < 6 Monaten Zeitspanne → zu kurz, kein Flag."""
+        dates  = []
+        konten = []
+        for m in [1, 2, 4, 5]:  # 5 Monate Spanne, aber nur 4 belegt → < 6
+            for _ in range(3):
+                dates.append(f"2024-{m:02d}-15")
+                konten.append("4711")
+        df = _make_df(
+            datum=dates,
+            betrag=["500,00"] * len(dates),
+            konto_soll=konten,
+            konto_haben=["1200"] * len(dates),
+            buchungstext=["Buchung"] * len(dates),
+            belegnummer=[f"{i:04d}" for i in range(len(dates))],
+            erfasser=["User"] * len(dates),
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t26_fehlende_monatsbuchung()
+        assert engine.flag_counts["FEHLENDE_MONATSBUCHUNG"] == 0
+
+    def test_12_months_missing_7_flagged(self):
+        """12 Monate, Konto fehlt in Monat 7 → Nachbarn (6,8) werden geflaggt."""
+        dates  = []
+        konten = []
+        for m in range(1, 13):
+            if m == 7:
+                continue
+            for _ in range(2):
+                dates.append(f"2024-{m:02d}-15")
+                konten.append("4711")
+        df = _make_df(
+            datum=dates,
+            betrag=["500,00"] * len(dates),
+            konto_soll=konten,
+            konto_haben=["1200"] * len(dates),
+            buchungstext=["Buchung"] * len(dates),
+            belegnummer=[f"{i:04d}" for i in range(len(dates))],
+            erfasser=["User"] * len(dates),
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t26_fehlende_monatsbuchung()
+        assert engine.flag_counts["FEHLENDE_MONATSBUCHUNG"] >= 2  # Monat 6 + 8
+
+    def test_sparse_konto_not_regular(self):
+        """Konto nur in 2 von 12 Monaten → nicht regelmäßig, kein Flag."""
+        dates  = []
+        konten = []
+        # Hintergrund-Konto für genügend Datenmenge
+        for m in range(1, 13):
+            for _ in range(2):
+                dates.append(f"2024-{m:02d}-15")
+                konten.append("5000")
+        # Sparse Konto: nur 2 von 12 Monaten
+        for m in [3, 9]:
+            dates.append(f"2024-{m:02d}-15")
+            konten.append("4711")
+        df = _make_df(
+            datum=dates,
+            betrag=["500,00"] * len(dates),
+            konto_soll=konten,
+            konto_haben=["1200"] * len(dates),
+            buchungstext=["Buchung"] * len(dates),
+            belegnummer=[f"{i:04d}" for i in range(len(dates))],
+            erfasser=["User"] * len(dates),
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t26_fehlende_monatsbuchung()
+        # 4711 ist nicht regulär (2 < max(3, 12*0.6=7.2) → nicht geflaggt)
+        # Nur wenn 5000 regulär genug ist und selbst Lücken hat
+        flagged_4711 = engine.df[
+            (engine.df["konto_soll"] == "4711") & engine.df["flag_FEHLENDE_MONATSBUCHUNG"]
+        ]
+        assert len(flagged_4711) == 0
+
 
 class TestEngineOutputThreshold:
     def test_low_score_not_in_output(self):

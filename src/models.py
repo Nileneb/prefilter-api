@@ -27,7 +27,7 @@ class JobStatusResponse(BaseModel):
     error: str | None = None
 
 
-# ── Analysis result (matches modules/engine.py run() return dict) ─────────────
+# ── Analysis result (matches src/engine.py run() return dict) ─────────────────
 
 class FlagCounts(BaseModel):
     BETRAG_ZSCORE: int = 0

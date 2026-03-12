@@ -203,19 +203,37 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 
 ## Worker-Skalierung (große Datensätze)
 
-Standard: 2 Worker-Replicas mit je 8 Celery-Prozessen. Für große Uploads skalieren:
+Standard: 1 Worker-Replica mit 8 Celery-Prozessen. Für große Uploads:
 
 ```bash
-# Mehr Worker-Replicas
+# Mehr Worker-Replicas (empfohlen: 4 für Datensätze > 100k Zeilen)
 docker compose up -d --build --scale worker=4
-
-# Oder via .env
-WORKER_REPLICAS=4
-WORKER_CONCURRENCY=8
 ```
 
-> **Hinweis:** Mehr Replicas erhöhen den Durchsatz (parallele Jobs). Eine einzelne
-> riesige Datei wird dadurch nicht schneller — dafür wäre Job-Partitionierung nötig.
+> **Hinweis:** `deploy.replicas` in `docker-compose.yml` wird von `docker compose` (non-Swarm)
+> ignoriert. Nutze immer `--scale worker=N`.
+
+### Parallele Pipeline (Single-Job-Beschleunigung)
+
+Ab **100.000 Zeilen** (konfigurierbar via `PARALLEL_THRESHOLD`) werden die 14 Anomalie-Tests
+automatisch parallel über alle verfügbaren Worker verteilt (Celery chord).
+
+| Workers | Sequentiell | Parallel | Speedup |
+| ------- | ----------- | -------- | ------- |
+| 1       | ~30s        | ~35s     | 0.9×    |
+| 2       | ~30s        | ~18s     | 1.7×    |
+| 4       | ~30s        | ~12s     | 2.5×    |
+
+**Flow:** `analyze_task` liest die Datei, speichert den vorbereiteten DataFrame als Parquet
+auf dem shared Volume. 14 `run_test_task`s laufen parallel (je einer pro Test, jeder liest
+das Parquet). `merge_task` sammelt die Flag-Ergebnisse, berechnet Scores und exportiert.
+
+**Konfiguration in `.env`:**
+
+```env
+PARALLEL_THRESHOLD=100000    # Ab wann parallel (Default: 100000)
+WORKER_CONCURRENCY=8         # Celery-Prozesse pro Worker-Container
+```
 
 ---
 

@@ -6,7 +6,7 @@ Alle Test-Module in src/tests/ implementieren AnomalyTest.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 
 import pandas as pd
 
@@ -21,6 +21,13 @@ class EngineStats:
     b_iqr: float = 0.0
     b_fence: float = 0.0
     n_vals: int = 0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "EngineStats":
+        return cls(**d)
 
 
 class AnomalyTest:

@@ -35,13 +35,13 @@ services:
         required: false
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - PARALLEL_THRESHOLD=${PARALLEL_THRESHOLD:-100000}
     volumes:
       - uploads:/data/uploads
     depends_on:
       redis:
         condition: service_healthy
     deploy:
-      replicas: ${WORKER_REPLICAS:-2}
       resources:
         limits:
           memory: 4G
