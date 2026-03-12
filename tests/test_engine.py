@@ -230,20 +230,36 @@ class TestEngineStorno:
 
 class TestEngineDoppelteBelegnummer:
     def test_duplicate_flagged(self):
-        """Doppelte Belegnummern mit gleichem Konto+Betrag → beide Zeilen flaggen."""
+        """3+ Zeilen mit gleicher Belegnr + Konto + Betrag → flaggen."""
         df = _make_df(
-            datum=["2024-01-15", "2024-01-16"],
-            betrag=["100,00", "100,00"],
-            belegnummer=["001", "001"],
-            konto_soll=["4711", "4711"],
-            konto_haben=["1200", "1200"],
-            buchungstext=["A", "B"],
+            datum=["2024-01-15", "2024-01-16", "2024-01-17"],
+            betrag=["100,00", "100,00", "100,00"],
+            belegnummer=["001", "001", "001"],
+            konto_soll=["4711", "4711", "4711"],
+            konto_haben=["1200", "1200", "1200"],
+            buchungstext=["A", "B", "C"],
+            erfasser=["User", "User", "User"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t13_doppelte_belegnummer()
+        assert engine.flag_counts["DOPPELTE_BELEGNUMMER"] == 3
+
+    def test_soll_haben_pair_not_flagged(self):
+        """Soll/Haben-Paar mit gleicher Belegnr aber verschiedenen Konten → NICHT flaggen."""
+        df = _make_df(
+            datum=["2024-01-15", "2024-01-15"],
+            betrag=["500,00", "500,00"],
+            belegnummer=["RE-001", "RE-001"],
+            konto_soll=["6000", "1200"],
+            konto_haben=["1200", "6000"],
+            buchungstext=["Aufwand", "Gegenbuchung"],
             erfasser=["User", "User"],
         )
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t13_doppelte_belegnummer()
-        assert engine.flag_counts["DOPPELTE_BELEGNUMMER"] == 2
+        assert engine.flag_counts["DOPPELTE_BELEGNUMMER"] == 0
 
 
 class TestEngineBelegKreditorDuplikat:
@@ -895,3 +911,103 @@ class TestRechnungsdatumBuchungsperiodeFallback:
         engine._t23_rechnungsdatum_periode()
         # Rechnungsdatum gleicher Monat → kein Flag
         assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v9 — Neue Tests für False-Positive-Reduktion
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestNearDuplicateRegularPayments:
+    """Regelmäßige Zahlungen (Gehalt, Miete) dürfen NICHT als Duplikat gelten."""
+
+    def test_monthly_salary_not_flagged(self):
+        """12 Monatsgehälter mit gleichem Betrag+Konto+Kreditor → kein Duplikat."""
+        from src.config import AnalysisConfig
+        dates = [f"2024-{m:02d}-28" for m in range(1, 13)]
+        n = len(dates)
+        df = _make_df(
+            datum=dates,
+            betrag=["3500,00"] * n,
+            konto_soll=["6000"] * n,
+            konto_haben=["1200"] * n,
+            buchungstext=["Gehalt"] * n,
+            belegnummer=[f"GH-{i:04d}" for i in range(n)],
+            kreditor=["Mitarbeiter X"] * n,
+            erfasser=["User"] * n,
+        )
+        config = AnalysisConfig(near_duplicate_regular_months=6)
+        engine = AnomalyEngine(df, config=config)
+        engine._stats()
+        engine._t06_near_duplicate()
+        assert engine.flag_counts["NEAR_DUPLICATE"] == 0
+
+    def test_large_group_skipped(self):
+        """Gruppe mit >10 Einträgen wird übersprungen (reguläres Muster)."""
+        n = 15
+        df = _make_df(
+            datum=["2024-01-15"] * n,
+            betrag=["100,00"] * n,
+            konto_soll=["4711"] * n,
+            konto_haben=["1200"] * n,
+            buchungstext=["Zahlung"] * n,
+            belegnummer=[f"{i:04d}" for i in range(n)],
+            kreditor=["Lieferant Z"] * n,
+            erfasser=["User"] * n,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t06_near_duplicate()
+        assert engine.flag_counts["NEAR_DUPLICATE"] == 0
+
+
+class TestBelegKreditorDauerschuld:
+    """Dauerschuldverhältnis (12× gleicher Betrag über 12 Monate) nicht flaggen."""
+
+    def test_dauerschuld_not_flagged(self):
+        """Kreditor mit 12× gleichem Betrag über 12 Monate → NICHT flaggen (Level 2)."""
+        dates = [f"2024-{m:02d}-01" for m in range(1, 13)]
+        n = len(dates)
+        df = _make_df(
+            datum=dates,
+            betrag=["1500,00"] * n,
+            belegnummer=[f"MIETE-{i:04d}" for i in range(n)],
+            kreditor=["Vermieter GmbH"] * n,
+            konto_soll=["6310"] * n,
+            konto_haben=["1200"] * n,
+            buchungstext=["Miete"] * n,
+            erfasser=["User"] * n,
+        )
+        from src.config import AnalysisConfig
+        config = AnalysisConfig(beleg_kreditor_max_group_size=20)
+        engine = AnomalyEngine(df, config=config)
+        engine._stats()
+        engine._t14_beleg_kreditor_duplikat()
+        # Level 1: alle haben verschiedene Belegnummern → nicht geflaggt
+        # Level 2: Gruppe hat 12 Einträge ≤ max_group_size=20, aber
+        #          Datum-Differenz zwischen benachbarten > 7 Tage (Monatsabstand)
+        assert engine.flag_counts["BELEG_KREDITOR_DUPLIKAT"] == 0
+
+
+class TestOutputStatistics:
+    """Output-Statistiken korrekt berechnet."""
+
+    def test_filter_ratio_correct(self):
+        """filter_ratio = verdächtig/total, NICHT output/irgendwas."""
+        n = 20
+        betraege = ["100,00"] * (n - 1) + ["100000,00"]
+        df = _make_df(
+            datum=["2024-01-15"] * n,
+            betrag=betraege,
+            konto_soll=["4711"] * n,
+            konto_haben=["1200"] * n,
+            buchungstext=["Normal"] * (n - 1) + ["Storno Extrem"],
+            belegnummer=[f"{i:04d}" for i in range(n)],
+            erfasser=["User"] * n,
+        )
+        engine = AnomalyEngine(df)
+        result = engine.run()
+        stats = result["statistics"]
+        assert stats["total_input"] == n
+        assert "total_suspicious" in stats
+        assert "total_output" in stats
+        assert stats["total_suspicious"] >= stats["total_output"]

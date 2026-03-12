@@ -18,6 +18,7 @@ class MonatsEntwicklung(AnomalyTest):
     name = "MONATS_ENTWICKLUNG"
     weight = 1.5
     critical = False
+    required_columns = ["_abs", "_datum", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         has_konto_date = df["_datum"].notna() & (df["_abs"] > 0)
@@ -81,6 +82,7 @@ class FehlendeMonatsbuchung(AnomalyTest):
     name = "FEHLENDE_MONATSBUCHUNG"
     weight = 1.0
     critical = False
+    required_columns = ["_datum", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         has_konto_date = (

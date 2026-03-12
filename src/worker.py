@@ -101,7 +101,14 @@ def run_test_task(self, prepare_result: dict, test_name: str) -> dict:
         if _is_cancelled(r, job_id):
             return {"test_name": test_name, "flagged": [], "count": 0}
 
-        df = pd.read_parquet(prepare_result["parquet_path"])
+        # Spalten-Selektion: nur die Spalten laden die der Test braucht (spart RAM)
+        test = _TEST_BY_NAME[test_name]
+        columns = None
+        if test.required_columns:
+            # Flag-Spalte wird ohnehin neu erzeugt, aber Index brauchen wir
+            columns = list(set(test.required_columns))
+
+        df = pd.read_parquet(prepare_result["parquet_path"], columns=columns)
         stats = EngineStats.from_dict(prepare_result["stats_dict"])
 
         try:

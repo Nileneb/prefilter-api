@@ -15,8 +15,12 @@ class AnalysisConfig(BaseModel):
         description="Z-Score-Grenze für BETRAG_ZSCORE (Standard: 2.5)",
     )
     iqr_factor: float = Field(
-        1.5, ge=0.5,
-        description="IQR-Faktor für BETRAG_IQR (Standard: 1.5 → Q3 + 1.5×IQR)",
+        3.0, ge=0.5,
+        description="IQR-Faktor für BETRAG_IQR (Standard: 3.0 → Q3 + 3.0×IQR)",
+    )
+    iqr_min_betrag: float = Field(
+        10000.0, ge=0.0,
+        description="Mindestbetrag für BETRAG_IQR — nur flaggen wenn Betrag über Fence UND über diesem Wert (Standard: 10000)",
     )
 
     # ── Duplikat-Erkennung ───────────────────────────────────
@@ -24,9 +28,21 @@ class AnalysisConfig(BaseModel):
         3, ge=1,
         description="Zeitfenster in Tagen für NEAR_DUPLICATE (Standard: 3)",
     )
+    near_duplicate_max_group_size: int = Field(
+        10, ge=2,
+        description="Max. Gruppengröße für NEAR_DUPLICATE — größere Gruppen sind reguläre Muster (Standard: 10)",
+    )
+    near_duplicate_regular_months: int = Field(
+        6, ge=2,
+        description="Mindest-Monate für reguläres Zahlungsmuster bei NEAR_DUPLICATE (Standard: 6)",
+    )
     beleg_kreditor_days: int = Field(
         7, ge=1,
         description="Zeitfenster in Tagen für BELEG_KREDITOR_DUPLIKAT Level 2 (Standard: 7)",
+    )
+    beleg_kreditor_max_group_size: int = Field(
+        20, ge=2,
+        description="Max. Gruppengröße für BELEG_KREDITOR_DUPLIKAT Level 2 (Standard: 20)",
     )
 
     # ── Neuer Kreditor ───────────────────────────────────────

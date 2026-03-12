@@ -37,12 +37,14 @@ class AnomalyTest:
       - definiert `name` (Flag-Name, z.B. "BETRAG_ZSCORE")
       - definiert `weight` (Gewicht im Scoring)
       - definiert `critical` (immer ausgeben wenn True)
+      - definiert `required_columns` (Spalten die der Test braucht; leer = alle)
       - implementiert `run(df, stats, config)` → setzt df.loc[mask, f"flag_{self.name}"] = True,
         gibt Anzahl der Treffer zurück.
     """
     name: str = ""
     weight: float = 1.0
     critical: bool = False
+    required_columns: list[str] = []
 
     def run(
         self,

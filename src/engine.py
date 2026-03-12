@@ -61,7 +61,7 @@ class AnomalyEngine:
         config: AnalysisConfig | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ):
-        self.df           = df.copy()
+        self.df           = df
         self.config       = config or AnalysisConfig()
         self.cancel_check = cancel_check
         self.logs:         list[str]       = []
@@ -87,13 +87,13 @@ class AnomalyEngine:
                 df[col] = ""
         df.fillna("", inplace=True)
 
-        df["_betrag"] = parse_german_number_series(df["betrag"]).fillna(0.0)
+        df["_betrag"] = parse_german_number_series(df["betrag"]).fillna(0.0).astype("float32")
         df["_abs"]    = df["_betrag"].abs()
         df["_datum"]  = parse_date_series(df["datum"])
         df["_score"]  = 0.0
 
-        # Kategorische Spalten — beschleunigt GroupBy um ~30-50%
-        for col in ("konto_soll", "konto_haben"):
+        # Kategorische Spalten — beschleunigt GroupBy und spart RAM
+        for col in ("konto_soll", "konto_haben", "kreditor", "belegnummer", "buchungstext"):
             if col in df.columns:
                 df[col] = df[col].astype("category")
 
@@ -142,9 +142,15 @@ class AnomalyEngine:
     def run_single_test(self, test_name: str, stats: EngineStats) -> list[int]:
         """Führt einen einzelnen Test aus, gibt geflaggte Indizes zurück."""
         test = _TEST_BY_NAME[test_name]
+        # Flag-Spalte initialisieren (nötig im Parallel-Pfad ohne _prepare())
+        flag_col = f"flag_{test_name}"
+        if flag_col not in self.df.columns:
+            self.df[flag_col] = False
         count = test.run(self.df, stats, self.config)
         self.flag_counts[test_name] = count
-        flagged = self.df.index[self.df[f"flag_{test_name}"]].tolist()
+        # NaN-Safety: _flag() setzt nur True, Rest kann NaN sein
+        flags = self.df[flag_col].fillna(False)
+        flagged = self.df.index[flags].tolist()
         return flagged
 
     def apply_flags_and_export(self, flag_results: list[dict]) -> dict:
@@ -236,6 +242,7 @@ class AnomalyEngine:
 
         total     = len(df)
         n_verd    = int(output_mask.sum())
+        n_output  = len(rows)
         avg_score = round(float(df["_score"].mean()), 2) if total > 0 else 0.0
         pct       = n_verd / total * 100 if total > 0 else 0.0
 
@@ -245,6 +252,7 @@ class AnomalyEngine:
         )
         summary_lines = [
             f"ERGEBNIS: {n_verd} von {total} verdächtig ({pct:.1f}%)",
+            f"Ausgegeben: {n_output} (Top {n_output} nach Score)" if n_output < n_verd else f"Ausgegeben: {n_output}",
             f"Flags gesamt: {sum(self.flag_counts.values())}, Ø Score: {avg_score}",
             f"Top-Flags: {', '.join(f'{k}:{v}' for k, v in top_flags) or 'keine'}",
         ]
@@ -258,11 +266,12 @@ class AnomalyEngine:
         return {
             "message": f"{n_verd} verdächtige Buchungen ({pct:.1f}%)",
             "statistics": {
-                "total_input":  total,
-                "total_output": len(rows),
-                "filter_ratio": f"{pct:.1f}%",
-                "avg_score":    avg_score,
-                "flag_counts":  self.flag_counts,
+                "total_input":      total,
+                "total_suspicious": n_verd,
+                "total_output":     n_output,
+                "filter_ratio":     f"{pct:.1f}%",
+                "avg_score":        avg_score,
+                "flag_counts":      self.flag_counts,
             },
             "verdaechtige_buchungen": rows,
             "stammdaten_report":      self.stammdaten_report,

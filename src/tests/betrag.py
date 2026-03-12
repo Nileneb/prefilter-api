@@ -35,6 +35,7 @@ class BetragZscore(AnomalyTest):
     name = "BETRAG_ZSCORE"
     weight = 2.0
     critical = True
+    required_columns = ["_abs", "_betrag", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         has_val = df["_abs"] > 0
@@ -62,6 +63,7 @@ class BetragIqr(AnomalyTest):
     name = "BETRAG_IQR"
     weight = 1.5
     critical = False
+    required_columns = ["_abs", "_betrag", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         has_val = df["_abs"] > 0
@@ -81,7 +83,7 @@ class BetragIqr(AnomalyTest):
             iqr = q3 - q1
             if iqr > 0:
                 fence = q3 + config.iqr_factor * iqr
-                mask = mask | (sel & (df["_abs"] > fence))
+                mask = mask | (sel & (df["_abs"] > fence) & (df["_abs"] > config.iqr_min_betrag))
 
         return self._flag(df, mask)
 
@@ -90,6 +92,7 @@ class KontoBetragAnomalie(AnomalyTest):
     name = "KONTO_BETRAG_ANOMALIE"
     weight = 2.0
     critical = True
+    required_columns = ["_abs", "_betrag", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         has_konto = df["konto_soll"].astype(str).str.strip() != ""

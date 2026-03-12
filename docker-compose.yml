@@ -28,7 +28,7 @@ services:
     command: >
       celery -A src.worker.celery_app worker
       --pool=prefork
-      --concurrency=${WORKER_CONCURRENCY:-8}
+      --concurrency=${WORKER_CONCURRENCY:-4}
       --max-tasks-per-child=50
       --loglevel=info
     restart: unless-stopped
@@ -48,12 +48,12 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: ${WORKER_MEMORY_LIMIT:-16G}
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --maxmemory 1gb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

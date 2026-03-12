@@ -19,24 +19,45 @@ class NearDuplicate(AnomalyTest):
     name = "NEAR_DUPLICATE"
     weight = 2.0
     critical = True
+    required_columns = ["_abs", "_datum", "konto_soll", "kreditor", "buchungstext"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         flagged: set[int] = set()
         window = config.near_duplicate_days
+        max_grp = config.near_duplicate_max_group_size
+        reg_months = config.near_duplicate_regular_months
 
-        # Gruppierung: Betrag + Konto + Kreditor (statt Konto+Gegenkonto)
-        # Das unterscheidet z.B. 100 Gehälter an verschiedene Personen
+        # Reguläre Zahlungsmuster identifizieren:
+        # Kreditor+Konto+Betrag in ≥ reg_months verschiedenen Monaten → regulär
+        regular_keys: set[tuple] = set()
+        has_datum = df["_datum"].notna()
+        if has_datum.any() and reg_months > 0:
+            dated = df.loc[has_datum]
+            ym = dated["_datum"].dt.to_period("M")
+            for key, grp in dated.groupby(
+                ["_abs", "konto_soll", "kreditor"], sort=False, observed=True
+            ):
+                if grp.empty:
+                    continue
+                n_months = ym.loc[grp.index].nunique()
+                if n_months >= reg_months:
+                    regular_keys.add(key)
+
+        # Gruppierung: Betrag + Konto + Kreditor
         kred = df["kreditor"].astype(str).str.strip()
         has_kred = kred != ""
 
         # Mit Kreditor: Betrag + Konto + Kreditor
         if has_kred.any():
-            for _, grp in df[has_kred].groupby(
+            for key, grp in df[has_kred].groupby(
                 ["_abs", "konto_soll", "kreditor"], sort=False, observed=True
             ):
-                if len(grp) < 2:
+                if len(grp) < 2 or len(grp) > max_grp:
                     continue
-                self._flag_near_window(grp, window, flagged)
+                # Reguläre Zahlungsmuster überspringen
+                if key in regular_keys:
+                    continue
+                self._flag_near_window(grp, window, flagged, max_grp)
 
         # Ohne Kreditor: Betrag + Konto + Buchungstext (Fallback)
         no_kred = ~has_kred
@@ -44,18 +65,18 @@ class NearDuplicate(AnomalyTest):
             for _, grp in df[no_kred].groupby(
                 ["_abs", "konto_soll", "buchungstext"], sort=False, observed=True
             ):
-                if len(grp) < 2:
+                if len(grp) < 2 or len(grp) > max_grp:
                     continue
-                self._flag_near_window(grp, window, flagged)
+                self._flag_near_window(grp, window, flagged, max_grp)
 
         if flagged:
             df.loc[list(flagged), f"flag_{self.name}"] = True
         return len(flagged)
 
     @staticmethod
-    def _flag_near_window(grp: pd.DataFrame, window: int, flagged: set) -> None:
+    def _flag_near_window(grp: pd.DataFrame, window: int, flagged: set, max_grp: int) -> None:
         undated = grp[grp["_datum"].isna()]
-        if len(undated) >= 2:
+        if 2 <= len(undated) <= max_grp:
             flagged.update(undated.index)
 
         dated = grp[grp["_datum"].notna()].sort_values("_datum")
@@ -72,12 +93,22 @@ class DoppelteBelegnummer(AnomalyTest):
     name = "DOPPELTE_BELEGNUMMER"
     weight = 2.0
     critical = True
+    required_columns = ["_betrag", "belegnummer", "konto_soll", "konto_haben"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        beleg = df["belegnummer"].astype(str).str.strip()
-        # Echtes Duplikat: gleiche Belegnr + gleiches Konto + gleicher Betrag
-        key = beleg + "|" + df["konto_soll"].astype(str) + "|" + df["_betrag"].astype(str)
-        mask = (beleg != "") & key.duplicated(keep=False)
+        # Echtes Duplikat: gleiche Belegnr + gleiches Soll-/Habenkonto + gleicher Betrag
+        # Soll/Haben-Paare mit gleicher Belegnr aber verschiedenen Konten → normal
+        # Erst ab 3+ identischen Keys verdächtig (2 = Soll/Haben-Paar)
+        has_beleg = df["belegnummer"].astype(str).str.strip() != ""
+        if not has_beleg.any():
+            return 0
+        sub = df.loc[has_beleg]
+        grp_size = sub.groupby(
+            ["belegnummer", "konto_soll", "konto_haben", "_betrag"],
+            sort=False, observed=True,
+        ).transform("size")
+        mask = pd.Series(False, index=df.index)
+        mask.loc[grp_size.index[grp_size >= 3]] = True
         return self._flag(df, mask)
 
 
@@ -85,6 +116,7 @@ class BelegKreditorDuplikat(AnomalyTest):
     name = "BELEG_KREDITOR_DUPLIKAT"
     weight = 2.5
     critical = True
+    required_columns = ["_abs", "_betrag", "_datum", "belegnummer", "kreditor"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         flagged: set[int] = set()
@@ -93,18 +125,23 @@ class BelegKreditorDuplikat(AnomalyTest):
         window  = config.beleg_kreditor_days
 
         # Level 1: gleiche Belegnr + gleicher Kreditor + GLEICHER BETRAG
-        # Verschiedene Beträge auf gleicher Belegnr = normale Aufschlüsselung!
+        # Verwende Groupby statt String-Konkatenation (spart RAM bei 788k Zeilen)
         has_all = (beleg != "") & (kred != "")
         if has_all.any():
-            bkb = beleg + "|" + kred + "|" + df["_betrag"].astype(str)
-            bkb_dup_mask = has_all & bkb.duplicated(keep=False)
-            flagged.update(df.index[bkb_dup_mask])
+            sub = df.loc[has_all]
+            grp_size = sub.groupby(
+                ["belegnummer", "kreditor", "_betrag"], sort=False, observed=True
+            ).transform("size")
+            dup_idx = grp_size.index[grp_size > 1]
+            flagged.update(dup_idx)
 
         # Level 2: gleicher Kreditor + gleicher Betrag + Datum ≤ window Tage
         # ABER: unterschiedliche Belegnummern (sonst schon oben gefangen)
+        # Gruppen > max_group_size überspringen (Dauerschuldverhältnisse)
+        max_grp = config.beleg_kreditor_max_group_size
         has_ka = (kred != "") & (df["_abs"] > 0) & (beleg != "")
         for _, grp in df.loc[has_ka].groupby(["kreditor", "_betrag"], sort=False, observed=True):
-            if len(grp) < 2:
+            if len(grp) < 2 or len(grp) > max_grp:
                 continue
             # Nur wenn VERSCHIEDENE Belegnummern
             if grp["belegnummer"].nunique() < 2:
