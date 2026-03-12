@@ -37,8 +37,8 @@ class AnalysisConfig(BaseModel):
         description="Mindest-Monate für reguläres Zahlungsmuster bei NEAR_DUPLICATE (Standard: 6)",
     )
     doppelte_beleg_min_count: int = Field(
-        3, ge=2,
-        description="Mindestanzahl identischer Belegnummern-Gruppen für DOPPELTE_BELEGNUMMER (Standard: 3)",
+        5, ge=2,
+        description="Mindestanzahl identischer Belegnummern-Gruppen für DOPPELTE_BELEGNUMMER (Standard: 5)",
     )
     beleg_kreditor_days: int = Field(
         7, ge=1,

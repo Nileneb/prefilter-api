@@ -12,6 +12,7 @@ Steuerung via ENV:
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 import sys
 
@@ -60,6 +61,26 @@ def setup_logging() -> None:
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
+
+    # Optionales File-Logging (rotierend, immer JSON)
+    log_dir = os.environ.get("LOG_DIR", "")
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            os.path.join(log_dir, "prefilter.log"),
+            maxBytes=50 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        json_formatter = structlog.stdlib.ProcessorFormatter(
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.processors.JSONRenderer(),
+            ],
+        )
+        file_handler.setFormatter(json_formatter)
+        root.addHandler(file_handler)
+
     root.setLevel(getattr(logging, log_level, logging.INFO))
 
     # Drittanbieter-Logger leiser stellen

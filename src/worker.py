@@ -24,6 +24,7 @@ import time
 import pandas as pd
 import redis as redis_sync
 from celery import Celery, chord, group
+from celery.signals import setup_logging as celery_setup_logging, worker_process_init
 
 from src.config import AnalysisConfig
 from src.logging_config import setup_logging, get_logger
@@ -33,6 +34,18 @@ from src.tests.base import EngineStats
 
 setup_logging()
 logger = get_logger("prefilter.worker")
+
+
+@celery_setup_logging.connect
+def _on_celery_setup_logging(**kwargs):
+    """Verhindert dass Celery unser Logging überschreibt."""
+    setup_logging()
+
+
+@worker_process_init.connect
+def _on_worker_process_init(**kwargs):
+    """Re-initialisiert Logging in jedem geforkten Celery-Kindprozess."""
+    setup_logging()
 
 REDIS_URL         = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 REDIS_BACKEND_URL = REDIS_URL.replace("/0", "/1").replace("/2", "/1")
@@ -47,6 +60,7 @@ celery_app.conf.update(
     result_serializer = "json",
     accept_content    = ["json"],
     task_track_started = True,
+    worker_hijack_root_logger = False,
     worker_prefetch_multiplier = 1,
     # Große Datensätze: Task erst nach Abschluss aus Queue entfernen
     # → bei Worker-Crash wird der Task erneut verteilt
@@ -208,8 +222,9 @@ def merge_task(self, test_results: list[dict], prepare_result: dict) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 @celery_app.task(bind=True, name="prefilter.analyze", max_retries=0)
-def analyze_task(self, job_id: str, filepath: str, config_dict: dict) -> str:
+def analyze_task(self, job_id: str, filepath: str, config_dict: dict, enabled_tests: list[str] | None = None) -> str:
     """Analyse-Task: entscheidet ob sequentiell oder parallel."""
+    enabled_set = set(enabled_tests) if enabled_tests else None
     r = _redis_client()
     start_time = time.time()
     n_rows = 0  # Default: sequentieller Pfad (Datei löschen in finally)
@@ -259,16 +274,17 @@ def analyze_task(self, job_id: str, filepath: str, config_dict: dict) -> str:
 
             r.close()
 
-            # chord: group(14 tests) → merge
+            # chord: group(only enabled tests) → merge
+            tests_to_run = [t for t in _ALL_TESTS if enabled_set is None or t.name in enabled_set]
             test_group = group(
-                run_test_task.s(prepare_result, t.name) for t in _ALL_TESTS
+                run_test_task.s(prepare_result, t.name) for t in tests_to_run
             )
             callback = merge_task.s(prepare_result)
             chord(test_group)(callback)
             return job_id
 
         # 3) Sequentieller Pfad (kleine Dateien)
-        _run_sequential(r, job_id, df, config_dict, start_time)
+        _run_sequential(r, job_id, df, config_dict, start_time, enabled_set)
         return job_id
 
     except Exception as exc:
@@ -289,7 +305,7 @@ def analyze_task(self, job_id: str, filepath: str, config_dict: dict) -> str:
         r.close()
 
 
-def _run_sequential(r, job_id: str, df, config_dict: dict, start_time: float) -> None:
+def _run_sequential(r, job_id: str, df, config_dict: dict, start_time: float, enabled_tests: set[str] | None = None) -> None:
     """Sequentieller Analyse-Pfad (< PARALLEL_THRESHOLD Zeilen)."""
     test_counter = [0]
 
@@ -315,7 +331,7 @@ def _run_sequential(r, job_id: str, df, config_dict: dict, start_time: float) ->
 
     engine._log = instrumented_log
 
-    result = engine.run()
+    result = engine.run(enabled_tests=enabled_tests)
 
     elapsed = round(time.time() - start_time, 1)
     r.hset(f"job:{job_id}", mapping={

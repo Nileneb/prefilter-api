@@ -17,8 +17,10 @@ services:
       - ROOT_PATH=${ROOT_PATH:-}
       - LOG_FORMAT=${LOG_FORMAT:-json}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_DIR=/data/logs
     volumes:
       - uploads:/data/uploads
+      - ./logs:/data/logs
     depends_on:
       redis:
         condition: service_healthy
@@ -40,8 +42,10 @@ services:
       - PARALLEL_THRESHOLD=${PARALLEL_THRESHOLD:-100000}
       - LOG_FORMAT=${LOG_FORMAT:-json}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_DIR=/data/logs
     volumes:
       - uploads:/data/uploads
+      - ./logs:/data/logs
     depends_on:
       redis:
         condition: service_healthy

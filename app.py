@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Buchungs-Anomalie Pre-Filter v4.0
+Buchungs-Anomalie Pre-Filter v5.0
 Gradio UI → Celery Worker-Pool → Ergebnis-Anzeige + Langdock Webhook
 
-Die UI erstellt Celery-Tasks direkt über Redis (kein FastAPI-Middleman).
-Workers skalieren mit: docker compose up --scale worker=N
+Features v5:
+  - Live-Log Streaming (Generator-basiert)
+  - Daten-Validierung mit Spalten-Check
+  - Test-Toggles (14 Checkboxen, auto-disable bei fehlenden Spalten)
 """
 
 import json
@@ -12,7 +14,7 @@ import os
 import shutil
 import time
 import uuid
-import logging
+from datetime import datetime
 
 import redis as redis_lib
 import pandas as pd
@@ -22,6 +24,10 @@ from celery import Celery
 from src.webhook import push_to_langdock
 from src.config import AnalysisConfig
 from src.logging_config import setup_logging, get_logger
+from src.validator import (
+    ALL_TEST_NAMES, TEST_CATEGORIES,
+    validate_columns, format_validation_report, ValidationResult,
+)
 
 # ── Logging ──────────────────────────────────────────────────
 setup_logging()
@@ -49,17 +55,24 @@ except Exception:
     _LOCAL_MODE = True
     logger.warning("Redis nicht erreichbar → Lokaler Fallback-Modus (direkte Analyse)")
 
-# Upload-Verzeichnis sicherstellen
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Modul-Level Job-ID für Cancel-Button (single-user, 2 Nutzer reichen)
 _current_job_id: str | None = None
+
+
+# ══════════════════════════════════════════════════════════════
+# LIVE-LOG HELPER
+# ══════════════════════════════════════════════════════════════
+
+def _ts() -> str:
+    return datetime.now().strftime("%H:%M:%S")
 
 
 # ══════════════════════════════════════════════════════════════
 # RESULT HELPER
 # ══════════════════════════════════════════════════════════════
-def _format_result(result: dict, webhook_url: str) -> tuple:
+
+def _format_result(result: dict, webhook_url: str) -> tuple[str, pd.DataFrame]:
     """Formatiert das engine.run()-Ergebnis-Dict für die Gradio-Ausgabe."""
     stats    = result["statistics"]
     flag_str = "\n".join(
@@ -86,7 +99,6 @@ def _format_result(result: dict, webhook_url: str) -> tuple:
                 f"     Flags: {r['anomaly_flags']}\n"
             )
 
-    # Webhook push
     url = webhook_url.strip() if webhook_url else LANGDOCK_WEBHOOK_URL
     if url:
         wh_result = push_to_langdock(result, url)
@@ -105,12 +117,54 @@ def _format_result(result: dict, webhook_url: str) -> tuple:
     else:
         display_df = pd.DataFrame()
 
-    return summary, "\n".join(result["logs"]), display_df
+    return summary, display_df
 
 
 # ══════════════════════════════════════════════════════════════
-# GRADIO HANDLER
+# VALIDATION HANDLER
 # ══════════════════════════════════════════════════════════════
+
+def validate_file(file):
+    """Nach Upload: Datei parsen, Spalten prüfen, Checkboxen updaten."""
+    if file is None:
+        # Alles zurücksetzen
+        updates = [gr.update(value="")] + [gr.update(value=True) for _ in ALL_TEST_NAMES]
+        return updates
+
+    filepath = file if isinstance(file, str) else str(file)
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext not in {".csv", ".xls", ".xlsx"}:
+        updates = [gr.update(value=f"❌ Nicht unterstützt: {ext}")]
+        updates += [gr.update(value=True) for _ in ALL_TEST_NAMES]
+        return updates
+
+    from src.parser import read_upload, map_columns
+    try:
+        df = read_upload(filepath)
+        df = map_columns(df)
+    except Exception as e:
+        updates = [gr.update(value=f"❌ Fehler beim Lesen: {e}")]
+        updates += [gr.update(value=True) for _ in ALL_TEST_NAMES]
+        return updates
+
+    v = validate_columns(df)
+    report = format_validation_report(v)
+
+    # Checkbox-States: blockierte Tests ausschalten
+    checkbox_updates = []
+    for test_name in ALL_TEST_NAMES:
+        if test_name in v.tests_blocked:
+            checkbox_updates.append(gr.update(value=False))
+        else:
+            checkbox_updates.append(gr.update(value=True))
+
+    return [gr.update(value=report)] + checkbox_updates
+
+
+# ══════════════════════════════════════════════════════════════
+# GRADIO HANDLER (Generator für Live-Log)
+# ══════════════════════════════════════════════════════════════
+
 def analyze_file(
     file,
     webhook_url: str,
@@ -118,20 +172,38 @@ def analyze_file(
     iqr_factor: float,
     near_duplicate_days: int,
     output_threshold: float,
-    progress=gr.Progress(),
+    *test_toggles,
 ):
-    """Erstellt einen Celery-Worker-Task und pollt Redis fuer das Ergebnis.
-    Fallback: direkte Analyse ohne Redis/Celery wenn nicht verfügbar."""
+    """Generator: yielded (summary, logs, table) bei jedem Schritt."""
     global _current_job_id
     _current_job_id = None
+    live_log_lines: list[str] = []
+
+    def log(msg: str) -> None:
+        live_log_lines.append(f"[{_ts()}] {msg}")
+
+    def current_state(summary="", table=None):
+        return summary, "\n".join(live_log_lines), table
 
     if file is None:
-        return "Bitte eine Datei hochladen.", "", None
+        yield current_state("Bitte eine Datei hochladen.")
+        return
 
     filepath = file if isinstance(file, str) else str(file)
     ext = os.path.splitext(filepath)[1].lower()
     if ext not in {".csv", ".xls", ".xlsx"}:
-        return f"Nicht unterstuetzt: {ext} -- nur CSV, XLS, XLSX", "", None
+        yield current_state(f"Nicht unterstuetzt: {ext} -- nur CSV, XLS, XLSX")
+        return
+
+    # Enabled tests aus Checkboxen
+    enabled_tests: set[str] = set()
+    for i, test_name in enumerate(ALL_TEST_NAMES):
+        if i < len(test_toggles) and test_toggles[i]:
+            enabled_tests.add(test_name)
+
+    disabled = set(ALL_TEST_NAMES) - enabled_tests
+    if disabled:
+        log(f"⏭️ Deaktivierte Tests: {', '.join(sorted(disabled))}")
 
     config_dict = {
         "zscore_threshold":    zscore_threshold,
@@ -140,9 +212,11 @@ def analyze_file(
         "output_threshold":    output_threshold,
     }
 
-    # ── Lokaler Fallback-Modus (ohne Redis/Celery) ────────────
+    # ── Lokaler Fallback-Modus ────────────────────────────────
     if _LOCAL_MODE:
-        progress(0.0, desc="Lokaler Modus: Analyse wird direkt ausgeführt...")
+        log("📂 Lokaler Modus: Datei wird geladen...")
+        yield current_state("Analyse läuft...")
+
         from src.parser import read_upload, map_columns
         from src.engine import AnomalyEngine
 
@@ -153,19 +227,46 @@ def analyze_file(
 
         df = read_upload(filepath)
         df = map_columns(df)
-        progress(0.1, desc="Datei geladen, starte Analyse...")
+        log(f"📂 Datei geladen: {os.path.basename(filepath)} ({len(df):,} Zeilen)".replace(",", "."))
+        yield current_state("Analyse läuft...")
 
         engine = AnomalyEngine(df, config=config)
-        result = engine.run()
-        progress(1.0, desc="Analyse abgeschlossen")
-        return _format_result(result, webhook_url)
+
+        # Instrumented run mit Live-Logging
+        from src.engine import _ALL_TESTS, NUM_TESTS
+        stats = engine._compute_stats()
+        log(f"📊 Statistiken berechnet")
+        yield current_state("Analyse läuft...")
+
+        for i, test in enumerate(_ALL_TESTS, start=1):
+            if engine._is_cancelled():
+                log("⛔ Analyse abgebrochen")
+                break
+            if test.name not in enabled_tests:
+                log(f"⏭️ Test {i}/{NUM_TESTS}: {test.name} übersprungen (deaktiviert)")
+                engine.flag_counts[test.name] = 0
+                yield current_state("Analyse läuft...")
+                continue
+            count = test.run_with_logging(df, stats, config) if hasattr(test, "run_with_logging") else test.run(df, stats, config)
+            engine.flag_counts[test.name] = count
+            engine._log(f"[{i:02d}/{NUM_TESTS}] {test.name}: {count}")
+            emoji = "🔴" if count > 1000 else "🟡" if count > 0 else "✅"
+            log(f"{emoji} Test {i}/{NUM_TESTS}: {test.name} → {count:,} Flags".replace(",", "."))
+            yield current_state("Analyse läuft...")
+
+        engine._compute_scores()
+        result = engine._export()
+        log(f"✅ Fertig! {result['statistics']['total_suspicious']:,} verdächtige Buchungen".replace(",", "."))
+
+        summary, display_df = _format_result(result, webhook_url)
+        yield current_state(summary, display_df)
+        return
 
     # ── Worker-Modus (Redis + Celery) ─────────────────────────
-    job_id   = str(uuid.uuid4())
-    dest     = os.path.join(UPLOAD_DIR, f"{job_id}{ext}")
+    job_id = str(uuid.uuid4())
+    dest   = os.path.join(UPLOAD_DIR, f"{job_id}{ext}")
     shutil.copy2(filepath, dest)
 
-    # 2) Job in Redis anlegen
     _r.hset(f"job:{job_id}", mapping={
         "status":       "queued",
         "progress_pct": "0",
@@ -175,23 +276,30 @@ def analyze_file(
     })
     _r.expire(f"job:{job_id}", JOB_TTL)
 
-    # 3) Celery-Task erstellen -- Worker holt sich den Job aus der Queue
-    _celery.send_task("prefilter.analyze", args=[job_id, dest, config_dict])
+    task_args = [job_id, dest, config_dict]
+    if enabled_tests != set(ALL_TEST_NAMES):
+        task_args.append(sorted(enabled_tests))
+
+    _celery.send_task("prefilter.analyze", args=task_args)
     _current_job_id = job_id
     logger.info("Job erstellt: %s -> Worker-Pool", job_id)
+    log(f"📤 Job {job_id[:8]}... eingereicht")
+    yield current_state("Warte auf Worker...")
 
-    # 4) Redis pollen bis done / failed / cancelled
-    progress(0.0, desc="Job eingereicht, warte auf Worker ...")
+    prev_test = ""
     while True:
         data = _r.hgetall(f"job:{job_id}")
         if not data:
-            raise gr.Error("Job in Redis nicht gefunden")
+            yield current_state("Job in Redis nicht gefunden.")
+            return
 
-        pct       = float(data.get("progress_pct", "0")) / 100.0
-        test_name = data.get("current_test", "")
         status    = data.get("status", "queued")
+        test_name = data.get("current_test", "")
 
-        progress(pct, desc=test_name or f"Status: {status}")
+        if test_name and test_name != prev_test:
+            log(f"🔬 {test_name}...")
+            prev_test = test_name
+            yield current_state("Analyse läuft...")
 
         if status in ("done", "failed", "cancelled"):
             break
@@ -200,24 +308,38 @@ def analyze_file(
 
     _current_job_id = None
 
-    # 5) Ergebnis aufbereiten
     if status == "cancelled":
-        return "Analyse abgebrochen.", "", None
+        log("⛔ Analyse abgebrochen")
+        yield current_state("Analyse abgebrochen.")
+        return
 
     if status == "failed":
         err = data.get("error", "Unbekannter Fehler")
-        return f"Analyse fehlgeschlagen: {err}", "", None
+        log(f"❌ Fehler: {err}")
+        yield current_state(f"Analyse fehlgeschlagen: {err}")
+        return
 
     result_raw = data.get("result")
     if not result_raw:
-        return "Kein Ergebnis vom Worker erhalten.", "", None
+        yield current_state("Kein Ergebnis vom Worker erhalten.")
+        return
 
     result = json.loads(result_raw)
-    return _format_result(result, webhook_url)
+
+    # Engine-Logs in Live-Log übernehmen
+    for engine_log in result.get("logs", []):
+        if engine_log.startswith("["):
+            # Test-Ergebnis-Zeilen
+            log(f"📋 {engine_log}")
+
+    elapsed = data.get("elapsed_s", "?")
+    log(f"✅ Fertig in {elapsed}s — {result['statistics']['total_suspicious']:,} verdächtige Buchungen".replace(",", "."))
+
+    summary, display_df = _format_result(result, webhook_url)
+    yield current_state(summary, display_df)
 
 
 def cancel_analysis():
-    """Setzt Abbruch-Signal direkt in Redis -- Worker stoppt nach dem laufenden Test."""
     if _LOCAL_MODE:
         return "Lokaler Modus: Abbruch nicht unterstützt (Analyse läuft synchron)."
     if _current_job_id:
@@ -226,15 +348,18 @@ def cancel_analysis():
     return "Abbruch-Signal gesendet -- wird nach dem laufenden Test wirksam."
 
 
-# ── Build UI ─────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# BUILD UI
+# ═══════════════════════════════════════════════════════════════
+
 with gr.Blocks(
     title="Buchungs-Anomalie Pre-Filter",
 ) as demo:
 
     gr.Markdown("# Buchungs-Anomalie Pre-Filter", elem_classes="main-title")
     gr.Markdown(
-        "Buchungsdaten hochladen (CSV / XLS / XLSX) -> 14 statistische Tests -> "
-        "verdaechtige Buchungen an Langdock Agent senden",
+        "Buchungsdaten hochladen (CSV / XLS / XLSX) → 14 statistische Tests → "
+        "verdächtige Buchungen an Langdock Agent senden",
         elem_classes="subtitle",
     )
 
@@ -253,18 +378,26 @@ with gr.Blocks(
                 info="Leer lassen = nur lokale Analyse, kein Push",
             )
 
+    # ── Datenqualitäts-Check ──────────────────────────────────
+    validation_output = gr.Textbox(
+        label="📋 Datenqualitäts-Check",
+        lines=8,
+        interactive=False,
+        visible=True,
+    )
+
     # ── Konfigurierbare Schwellenwerte ────────────────────────
-    with gr.Accordion("Erweiterte Einstellungen", open=False):
+    with gr.Accordion("⚙️ Erweiterte Einstellungen", open=False):
         with gr.Row():
             zscore_slider = gr.Slider(
                 minimum=1.0, maximum=5.0, value=2.5, step=0.1,
                 label="Z-Score Schwelle (BETRAG_ZSCORE)",
-                info="Hoeher = weniger sensitiv (Standard: 2.5)",
+                info="Höher = weniger sensitiv (Standard: 2.5)",
             )
             iqr_slider = gr.Slider(
                 minimum=0.5, maximum=5.0, value=1.5, step=0.1,
                 label="IQR-Faktor (BETRAG_IQR)",
-                info="Q3 + Faktor x IQR = Fence (Standard: 1.5)",
+                info="Q3 + Faktor × IQR = Fence (Standard: 1.5)",
             )
         with gr.Row():
             near_dup_slider = gr.Slider(
@@ -275,34 +408,53 @@ with gr.Blocks(
             threshold_slider = gr.Slider(
                 minimum=0.5, maximum=5.0, value=2.0, step=0.5,
                 label="Output-Schwellenwert",
-                info="Min. Score fuer Ausgabe (Standard: 2.0)",
+                info="Min. Score für Ausgabe (Standard: 2.0)",
             )
 
+    # ── Test-Konfiguration (14 Checkboxen) ────────────────────
+    test_checkboxes: list[gr.Checkbox] = []
+    with gr.Accordion("🔧 Test-Konfiguration", open=False):
+        gr.Markdown("Tests an-/abschalten. Blockierte Tests werden nach dem Datei-Upload automatisch deaktiviert.")
+        for category, test_names in TEST_CATEGORIES.items():
+            with gr.Row():
+                for test_name in test_names:
+                    cb = gr.Checkbox(label=test_name, value=True)
+                    test_checkboxes.append(cb)
+
     with gr.Row():
-        analyze_btn = gr.Button("Analyse starten", variant="primary", size="lg")
-        cancel_btn  = gr.Button("Abbrechen", variant="stop", size="lg")
+        analyze_btn = gr.Button("▶️ Analyse starten", variant="primary", size="lg")
+        cancel_btn  = gr.Button("⛔ Abbrechen", variant="stop", size="lg")
 
     with gr.Tabs():
         with gr.Tab("Ergebnis"):
             summary_output = gr.Textbox(
                 label="Zusammenfassung", lines=20, interactive=False,
             )
-        with gr.Tab("Verdaechtige Buchungen"):
+        with gr.Tab("Verdächtige Buchungen"):
             table_output = gr.Dataframe(
-                label="Verdaechtige Buchungen (sortiert nach Score)",
+                label="Verdächtige Buchungen (sortiert nach Score)",
                 interactive=False,
                 wrap=True,
             )
-        with gr.Tab("Logs"):
+        with gr.Tab("📜 Live-Log"):
             logs_output = gr.Textbox(
-                label="Engine-Logs", lines=25, interactive=False,
+                label="Live-Log", lines=25, interactive=False,
             )
 
+    # ── Event: File-Upload → Validierung ──────────────────────
+    file_input.change(
+        fn=validate_file,
+        inputs=[file_input],
+        outputs=[validation_output] + test_checkboxes,
+    )
+
+    # ── Event: Analyse starten ────────────────────────────────
     analyze_btn.click(
         fn=analyze_file,
         inputs=[
             file_input, webhook_input,
             zscore_slider, iqr_slider, near_dup_slider, threshold_slider,
+            *test_checkboxes,
         ],
         outputs=[summary_output, logs_output, table_output],
     )
@@ -315,10 +467,10 @@ with gr.Blocks(
 
     gr.Markdown(
         "---\n"
-        "**14 Tests:** Z-Score | IQR | Near-Duplicate | Doppelte Belegnummer | "
-        "Beleg-Kreditor-Duplikat | Storno | Neuer Kreditor + hoher Betrag | "
-        "Konto-Betrags-Anomalie | Leerer Buchungstext | Velocity-Anomalie | "
-        "Rechnungsdatum-Periode | Buchungstext-Periode | "
+        "**14 Tests:** Z-Score | IQR | Konto-Betrag | Near-Duplicate | "
+        "Doppelte Belegnummer | Beleg-Kreditor-Duplikat | Storno | "
+        "Leerer Buchungstext | Rechnungsdatum-Periode | Buchungstext-Periode | "
+        "Neuer Kreditor | Velocity-Anomalie | "
         "Monats-Entwicklung | Fehlende Monatsbuchung"
     )
 

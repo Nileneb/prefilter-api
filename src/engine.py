@@ -146,7 +146,7 @@ class AnomalyEngine:
         flag_col = f"flag_{test_name}"
         if flag_col not in self.df.columns:
             self.df[flag_col] = False
-        count = test.run(self.df, stats, self.config)
+        count = test.run_with_logging(self.df, stats, self.config) if hasattr(test, "run_with_logging") else test.run(self.df, stats, self.config)
         self.flag_counts[test_name] = count
         # NaN-Safety: _flag() setzt nur True, Rest kann NaN sein
         flags = self.df[flag_col].fillna(False)
@@ -175,14 +175,18 @@ class AnomalyEngine:
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
-    def run(self) -> dict:
+    def run(self, enabled_tests: set[str] | None = None) -> dict:
         stats = self._compute_stats()
 
         for i, test in enumerate(_ALL_TESTS, start=1):
             if self._is_cancelled():
                 self._log("Analyse abgebrochen (Stop-Signal)")
                 break
-            count = test.run(self.df, stats, self.config)
+            if enabled_tests is not None and test.name not in enabled_tests:
+                self._log(f"[{i:02d}/{NUM_TESTS}] {test.name}: übersprungen (deaktiviert)")
+                self.flag_counts[test.name] = 0
+                continue
+            count = test.run_with_logging(self.df, stats, self.config) if hasattr(test, "run_with_logging") else test.run(self.df, stats, self.config)
             self.flag_counts[test.name] = count
             self._log(f"[{i:02d}/{NUM_TESTS}] {test.name}: {count}")
 
@@ -292,7 +296,7 @@ class AnomalyEngine:
         """Run a single test by flag name, using cached stats."""
         test  = _TEST_BY_NAME[name]
         stats = getattr(self, "_stats_cache", EngineStats())
-        count = test.run(self.df, stats, self.config)
+        count = test.run_with_logging(self.df, stats, self.config) if hasattr(test, "run_with_logging") else test.run(self.df, stats, self.config)
         self.flag_counts[name] = count
 
     def _t01_zscore(self)                -> None: self._run_named_test("BETRAG_ZSCORE")
