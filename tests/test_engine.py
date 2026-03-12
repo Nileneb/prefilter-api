@@ -1,21 +1,27 @@
 """
 Unit & integration tests for the Buchungs-Anomalie Pre-Filter.
 Run with: python -m pytest tests/ -v
+
+Stand nach Phase 0 / 4.2-Refactor:
+- 15 Tests entfernt (SELTENE_KONTIERUNG, WOCHENENDE, MONATSENDE, QUARTALSENDE,
+  AUSSERHALB_GESCHAEFTSZEIT, BENFORD_*, RUNDER_BETRAG, ERFASSER_ANOMALIE,
+  SPLIT_VERDACHT, SCHWELLENWERT_CLUSTER, BELEG_LUECKE, SOLL_GLEICH_HABEN,
+  TEXT_KREDITOR_MISMATCH, FUZZY_KREDITOR)
+- 10 Tests verbleiben und sind vollständig vektorisiert
+- Boolean-Spalten statt Python-Listen: engine.df["flag_X"] statt engine.df["_flags"]
 """
 
-import math
 from datetime import datetime
 
 import pandas as pd
-import pytest
 
-from modules.parser import parse_german_number, parse_date, map_columns, read_upload
-from modules.engine import AnomalyEngine
+from src.parser import parse_german_number, parse_date, map_columns, read_upload
+from src.engine import AnomalyEngine
 
 
-# ══════════════════════════════════════════════════════════════
-# Parser tests
-# ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# Parser-Tests
+# ══════════════════════════════════════════════════════════════════════════════
 
 class TestParseGermanNumber:
     def test_simple_integer(self):
@@ -95,38 +101,36 @@ class TestMapColumns:
     def test_umlaut_mapping(self):
         df = pd.DataFrame({"Beträge": [1]})  # not exact match
         mapped = map_columns(df)
-        # Should still work via partial match
         assert len(mapped.columns) >= 1
 
 
-# ══════════════════════════════════════════════════════════════
-# Engine tests
-# ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# Engine-Tests
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _make_df(**kwargs) -> pd.DataFrame:
-    """Helper to create test DataFrames with defaults."""
+    """Hilfs-Funktion: DataFrame mit sinnvollen Defaults."""
     defaults = {
-        "datum": ["2024-01-15"],
-        "betrag": ["1000,00"],
-        "konto_soll": ["4711"],
-        "konto_haben": ["1200"],
+        "datum":        ["2024-01-15"],
+        "betrag":       ["1000,00"],
+        "konto_soll":   ["4711"],
+        "konto_haben":  ["1200"],
         "buchungstext": ["Test"],
-        "belegnummer": ["001"],
+        "belegnummer":  ["001"],
         "kostenstelle": [""],
-        "kreditor": [""],
-        "erfasser": ["TestUser"],
+        "kreditor":     [""],
+        "erfasser":     ["TestUser"],
     }
     defaults.update(kwargs)
     n = max(len(v) for v in defaults.values())
     for k, v in defaults.items():
         if len(v) < n:
-            defaults[k] = v * n  # repeat to fill
+            defaults[k] = v * n
     return pd.DataFrame(defaults)
 
 
 class TestEngineZScore:
     def test_extreme_value_flagged(self):
-        # 99 normal values + 1 extreme
         betraege = ["100,00"] * 99 + ["100000,00"]
         df = _make_df(
             datum=["2024-01-15"] * 100,
@@ -145,7 +149,7 @@ class TestEngineZScore:
 
 class TestEngineNearDuplicate:
     def test_counts_bookings_not_pairs(self):
-        """FIX #3: 4 identical bookings should flag 4 bookings, not 6 pairs."""
+        """4 identische Buchungen → 4 Bookings flaggen, nicht 6 Paare."""
         df = _make_df(
             datum=["2024-01-15"] * 4,
             betrag=["1000,00"] * 4,
@@ -158,13 +162,12 @@ class TestEngineNearDuplicate:
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t06_near_duplicate()
-        # Should be 4 (bookings), not 6 (pairs)
         assert engine.flag_counts["NEAR_DUPLICATE"] == 4
 
     def test_missing_one_date_not_flagged(self):
-        """FIX #4: if only one booking has no date, don't auto-flag."""
+        """Nur eine Buchung ohne Datum → nicht flaggen."""
         df = _make_df(
-            datum=["2024-01-15", ""],  # one has date, one doesn't
+            datum=["2024-01-15", ""],
             betrag=["1000,00", "1000,00"],
             konto_soll=["4711", "4711"],
             konto_haben=["1200", "1200"],
@@ -175,11 +178,10 @@ class TestEngineNearDuplicate:
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t06_near_duplicate()
-        # Should NOT be flagged (only one missing date)
         assert engine.flag_counts["NEAR_DUPLICATE"] == 0
 
     def test_both_missing_dates_flagged(self):
-        """Both missing dates with same amount/accounts → flagged."""
+        """Beide Buchungen ohne Datum → beide flaggen."""
         df = _make_df(
             datum=["", ""],
             betrag=["1000,00", "1000,00"],
@@ -195,31 +197,9 @@ class TestEngineNearDuplicate:
         assert engine.flag_counts["NEAR_DUPLICATE"] == 2
 
 
-class TestEngineBenford:
-    def test_small_amounts_excluded(self):
-        """FIX #5: amounts ≤10 should not affect Benford analysis."""
-        # Create lots of small amounts that would distort Benford
-        small = ["0,50"] * 100
-        normal = [f"{i * 111}" for i in range(1, 61)]
-        df = _make_df(
-            datum=["2024-01-15"] * 160,
-            betrag=small + normal,
-            konto_soll=["4711"] * 160,
-            konto_haben=["1200"] * 160,
-            buchungstext=["Test"] * 160,
-            belegnummer=[f"{i:04d}" for i in range(160)],
-            erfasser=["User"] * 160,
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t07_benford()
-        # The key assertion: the small amounts should NOT have been
-        # counted in the Benford analysis at all
-
-
 class TestEngineStorno:
     def test_gutschrift_normal_not_flagged(self):
-        """FIX #14: normal-amount Gutschrift should not be flagged."""
+        """Normale Gutschrift mit kleinem Betrag darf nicht flaggen."""
         df = _make_df(
             datum=["2024-01-15"] * 50,
             betrag=["100,00"] * 49 + ["50,00"],
@@ -232,12 +212,11 @@ class TestEngineStorno:
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t15_storno()
-        # The "Gutschrift" with 50€ should NOT be flagged (below threshold)
-        last_flags = engine.df.iloc[-1]["_flags"]
-        assert "STORNO" not in last_flags
+        # Boolean-Spalte statt _flags-Liste (neue API nach Phase-0-Refactor)
+        assert not engine.df.iloc[-1]["flag_STORNO"]
 
     def test_storno_keyword_always_flagged(self):
-        """Explicit storno keyword should always be flagged."""
+        """Explizites Storno-Keyword muss immer flaggen."""
         df = _make_df(
             betrag=["50,00"],
             buchungstext=["Storno Rechnung 123"],
@@ -248,36 +227,13 @@ class TestEngineStorno:
         assert engine.flag_counts["STORNO"] == 1
 
 
-class TestEngineSollGleichHaben:
-    def test_same_account_flagged(self):
-        """NEW #12: Soll = Haben should be flagged."""
-        df = _make_df(
-            konto_soll=["4711"],
-            konto_haben=["4711"],
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t17_soll_gleich_haben()
-        assert engine.flag_counts["SOLL_GLEICH_HABEN"] == 1
-
-    def test_different_accounts_not_flagged(self):
-        df = _make_df(
-            konto_soll=["4711"],
-            konto_haben=["1200"],
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t17_soll_gleich_haben()
-        assert engine.flag_counts["SOLL_GLEICH_HABEN"] == 0
-
-
 class TestEngineDoppelteBelegnummer:
     def test_duplicate_flagged(self):
-        """NEW #11: duplicate document numbers flagged."""
+        """Doppelte Belegnummern → beide Zeilen flaggen."""
         df = _make_df(
             datum=["2024-01-15", "2024-01-16"],
             betrag=["100,00", "200,00"],
-            belegnummer=["001", "001"],  # same!
+            belegnummer=["001", "001"],
             konto_soll=["4711", "4720"],
             konto_haben=["1200", "1200"],
             buchungstext=["A", "B"],
@@ -289,80 +245,9 @@ class TestEngineDoppelteBelegnummer:
         assert engine.flag_counts["DOPPELTE_BELEGNUMMER"] == 2
 
 
-class TestEngineGeschaeftszeit:
-    def test_nighttime_flagged(self):
-        """NEW #8: booking at 3 AM should be flagged."""
-        df = _make_df(
-            datum=["2024-01-15T03:00:00"],
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t05_ausserhalb_geschaeftszeit()
-        assert engine.flag_counts["AUSSERHALB_GESCHAEFTSZEIT"] == 1
-
-    def test_daytime_not_flagged(self):
-        """Booking at 10 AM should not be flagged."""
-        df = _make_df(
-            datum=["2024-01-15T10:00:00"],
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t05_ausserhalb_geschaeftszeit()
-        assert engine.flag_counts["AUSSERHALB_GESCHAEFTSZEIT"] == 0
-
-    def test_midnight_default_not_flagged(self):
-        """Date without time (midnight) should NOT be flagged."""
-        df = _make_df(
-            datum=["2024-01-15"],
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t05_ausserhalb_geschaeftszeit()
-        assert engine.flag_counts["AUSSERHALB_GESCHAEFTSZEIT"] == 0
-
-
-class TestEngineSchwellenwertCluster:
-    def test_cluster_below_threshold(self):
-        """Bookings just below 5000 threshold should be flagged."""
-        # 20 bookings minimum, >5% in the 4500-5000 band
-        normal = ["200,00"] * 14
-        cluster = ["4800,00"] * 6  # 6/20 = 30% → should trigger
-        df = _make_df(
-            datum=["2024-01-15"] * 20,
-            betrag=normal + cluster,
-            konto_soll=["4711"] * 20,
-            konto_haben=["1200"] * 20,
-            buchungstext=["Normal"] * 14 + ["Knapp"] * 6,
-            belegnummer=[f"{i:04d}" for i in range(20)],
-            erfasser=["User"] * 20,
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t11_schwellenwert_cluster()
-        assert engine.flag_counts["SCHWELLENWERT_CLUSTER"] >= 6
-
-    def test_no_cluster_if_too_few(self):
-        """Less than 3 bookings in band should NOT be flagged."""
-        normal = ["200,00"] * 18
-        cluster = ["4800,00"] * 2  # only 2 in band
-        df = _make_df(
-            datum=["2024-01-15"] * 20,
-            betrag=normal + cluster,
-            konto_soll=["4711"] * 20,
-            konto_haben=["1200"] * 20,
-            buchungstext=["Normal"] * 18 + ["Knapp"] * 2,
-            belegnummer=[f"{i:04d}" for i in range(20)],
-            erfasser=["User"] * 20,
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t11_schwellenwert_cluster()
-        assert engine.flag_counts["SCHWELLENWERT_CLUSTER"] == 0
-
-
 class TestEngineBelegKreditorDuplikat:
     def test_same_beleg_same_kreditor(self):
-        """Same doc# + same creditor → flagged."""
+        """Gleiche Belegnr. + gleicher Kreditor → flaggen."""
         df = _make_df(
             datum=["2024-01-15", "2024-01-16"],
             betrag=["500,00", "700,00"],
@@ -379,11 +264,11 @@ class TestEngineBelegKreditorDuplikat:
         assert engine.flag_counts["BELEG_KREDITOR_DUPLIKAT"] == 2
 
     def test_same_kreditor_amount_within_7days(self):
-        """Same creditor + same amount + ≤7 days → flagged."""
+        """Gleicher Kreditor + Betrag + ≤7 Tage → flaggen."""
         df = _make_df(
             datum=["2024-01-15", "2024-01-20"],
             betrag=["1000,00", "1000,00"],
-            belegnummer=["INV-001", "INV-002"],  # different doc#
+            belegnummer=["INV-001", "INV-002"],
             kreditor=["Lieferant B", "Lieferant B"],
             konto_soll=["4711", "4711"],
             konto_haben=["1200", "1200"],
@@ -396,7 +281,7 @@ class TestEngineBelegKreditorDuplikat:
         assert engine.flag_counts["BELEG_KREDITOR_DUPLIKAT"] == 2
 
     def test_different_kreditors_not_flagged(self):
-        """Same doc# but different creditors → NOT flagged (different test)."""
+        """Verschiedene Kreditoren → nicht flaggen."""
         df = _make_df(
             datum=["2024-01-15", "2024-01-16"],
             betrag=["500,00", "500,00"],
@@ -415,40 +300,28 @@ class TestEngineBelegKreditorDuplikat:
 
 class TestEngineLeererBuchungstext:
     def test_empty_text_flagged(self):
-        """Empty booking text should be flagged."""
-        df = _make_df(
-            buchungstext=[""],
-        )
+        df = _make_df(buchungstext=[""])
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t21_leerer_buchungstext()
         assert engine.flag_counts["LEERER_BUCHUNGSTEXT"] == 1
 
     def test_generic_text_flagged(self):
-        """Generic text like 'diverse' should be flagged."""
-        df = _make_df(
-            buchungstext=["diverse"],
-        )
+        df = _make_df(buchungstext=["diverse"])
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t21_leerer_buchungstext()
         assert engine.flag_counts["LEERER_BUCHUNGSTEXT"] == 1
 
     def test_short_text_flagged(self):
-        """Very short text (≤2 chars) should be flagged."""
-        df = _make_df(
-            buchungstext=["ab"],
-        )
+        df = _make_df(buchungstext=["ab"])
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t21_leerer_buchungstext()
         assert engine.flag_counts["LEERER_BUCHUNGSTEXT"] == 1
 
     def test_proper_text_not_flagged(self):
-        """Normal booking text should not be flagged."""
-        df = _make_df(
-            buchungstext=["Bezahlung Rechnung 12345 vom 15.01.2024"],
-        )
+        df = _make_df(buchungstext=["Bezahlung Rechnung 12345 vom 15.01.2024"])
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t21_leerer_buchungstext()
@@ -457,20 +330,18 @@ class TestEngineLeererBuchungstext:
 
 class TestEngineVelocityAnomalie:
     def test_spike_flagged(self):
-        """Creditor with sudden spike in bookings per month → flagged."""
-        # 5 months with 2 bookings each, then 1 month with 10
-        dates = []
+        """Kreditor mit plötzlichem Monats-Spike → flaggen."""
+        dates     = []
         kreditors = []
         for m in range(1, 6):
             for _ in range(2):
                 dates.append(f"2024-{m:02d}-15")
                 kreditors.append("Lieferant X")
-        # Spike month
         for _ in range(10):
             dates.append("2024-06-15")
             kreditors.append("Lieferant X")
 
-        n = len(dates)
+        n  = len(dates)
         df = _make_df(
             datum=dates,
             betrag=["100,00"] * n,
@@ -487,149 +358,169 @@ class TestEngineVelocityAnomalie:
         assert engine.flag_counts["VELOCITY_ANOMALIE"] >= 1
 
 
-class TestEngineFuzzyKreditor:
-    def test_similar_names_in_stammdaten(self):
-        """Similar creditor names → reported in stammdaten_report, not per-booking."""
+# ── Phase-2-Tests ─────────────────────────────────────────────────────────────
+
+class TestEngineRechnungsdatumPeriode:
+    def test_different_period_flagged(self):
+        """Rechnungsdatum in anderem Monat als Buchungsdatum → flaggen."""
         df = _make_df(
-            datum=["2024-01-15"] * 4,
-            betrag=["100,00"] * 4,
-            konto_soll=["4711"] * 4,
-            konto_haben=["1200"] * 4,
-            buchungstext=["Einkauf"] * 4,
-            belegnummer=["001", "002", "003", "004"],
-            kreditor=[
-                "Mueller Elektronik GmbH",
-                "Müller Elektronik",
-                "Schmidt Bürobedarf",
-                "Schmidt Buerobedarf GmbH",
-            ],
-            erfasser=["User"] * 4,
+            datum=["2024-03-15"],
+            rechnungsdatum=["2024-01-10"],  # Januar ≠ März
         )
         engine = AnomalyEngine(df)
         engine._stats()
-        engine._t20_fuzzy_kreditor()
-        matches = engine.stammdaten_report["fuzzy_kreditor_matches"]
-        # At least 1 pair should be found
-        assert len(matches) >= 1
-        # No per-booking FUZZY_KREDITOR flags should exist
-        for _, row in engine.df.iterrows():
-            assert "FUZZY_KREDITOR" not in row["_flags"]
+        engine._t23_rechnungsdatum_periode()
+        assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 1
 
-    def test_completely_different_no_matches(self):
-        """Completely different creditors → no matches in stammdaten_report."""
+    def test_same_period_not_flagged(self):
+        """Gleicher Monat → nicht flaggen."""
         df = _make_df(
-            datum=["2024-01-15"] * 2,
-            betrag=["100,00"] * 2,
-            konto_soll=["4711"] * 2,
-            konto_haben=["1200"] * 2,
-            buchungstext=["Einkauf"] * 2,
+            datum=["2024-03-15"],
+            rechnungsdatum=["2024-03-01"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t23_rechnungsdatum_periode()
+        assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 0
+
+    def test_missing_rechnungsdatum_not_flagged(self):
+        """Kein Rechnungsdatum vorhanden → nicht flaggen."""
+        df = _make_df(datum=["2024-03-15"])  # rechnungsdatum leer
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t23_rechnungsdatum_periode()
+        assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 0
+
+
+class TestEngineBuchungstextPeriode:
+    def test_period_mismatch_flagged(self):
+        """Text enthält '01/2024', Buchung ist in März 2024 → flaggen."""
+        df = _make_df(
+            datum=["2024-03-15"],
+            buchungstext=["Rechnung 01/2024 Wartungsvertrag"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t24_buchungstext_periode()
+        assert engine.flag_counts["BUCHUNGSTEXT_PERIODE"] == 1
+
+    def test_matching_period_not_flagged(self):
+        """Text enthält '03/2024', Buchung ist in März 2024 → nicht flaggen."""
+        df = _make_df(
+            datum=["2024-03-15"],
+            buchungstext=["Rechnung 03/2024 Wartungsvertrag"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t24_buchungstext_periode()
+        assert engine.flag_counts["BUCHUNGSTEXT_PERIODE"] == 0
+
+    def test_no_period_in_text_not_flagged(self):
+        """Text ohne Periodenangabe → nicht flaggen."""
+        df = _make_df(
+            datum=["2024-03-15"],
+            buchungstext=["Reguläre Wartungsrechnung Heizungsanlage"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t24_buchungstext_periode()
+        assert engine.flag_counts["BUCHUNGSTEXT_PERIODE"] == 0
+
+
+class TestEngineMonatsEntwicklung:
+    def test_spike_month_flagged(self):
+        """Ausreißer-Monat auf GuV-Konto → alle Buchungen dieses Monats flaggen."""
+        # 9 normale Monate (Z = N/sqrt(N+1) = 9/√10 ≈ 2.85 > 2.5)
+        dates    = []
+        betraege = []
+        for m in range(1, 10):           # Monate 1–9 normal
+            for _ in range(3):
+                dates.append(f"2024-{m:02d}-15")
+                betraege.append("1000,00")
+        for _ in range(3):               # Monat 11 als Ausreißer
+            dates.append("2024-11-15")
+            betraege.append("50000,00")
+
+        n  = len(dates)
+        df = _make_df(
+            datum=dates,
+            betrag=betraege,
+            konto_soll=["65000"] * n,   # Aufwandskonto
+            konto_haben=["1200"] * n,
+            buchungstext=["Buchung"] * n,
+            belegnummer=[f"{i:04d}" for i in range(n)],
+            erfasser=["User"] * n,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t25_monats_entwicklung()
+        assert engine.flag_counts["MONATS_ENTWICKLUNG"] >= 1
+
+    def test_non_pnl_account_not_flagged(self):
+        """Bilanzkonto (1200) wird nicht analysiert."""
+        n  = 6
+        df = _make_df(
+            datum=[f"2024-{m:02d}-15" for m in range(1, 7)],
+            betrag=["1000,00"] * 5 + ["50000,00"],
+            konto_soll=["1200"] * n,   # Bilanzkonto → kein GuV
+            konto_haben=["1000"] * n,
+            buchungstext=["Buchung"] * n,
+            belegnummer=[f"{i:04d}" for i in range(n)],
+            erfasser=["User"] * n,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t25_monats_entwicklung()
+        assert engine.flag_counts["MONATS_ENTWICKLUNG"] == 0
+
+
+class TestEngineFehlendeMonatsbuchung:
+    def test_missing_month_neighbors_flagged(self):
+        """Konto bucht regelmäßig, Monat fehlt → Nachbarmonate werden geflaggt."""
+        # 5 Monate (1,2,4,5,6) × 3 Buchungen = 15 gesamt (>= Mindest-Datenmenge)
+        # Monat 3 fehlt → Monate 2 und 4 sind Nachbarn → werden geflaggt
+        dates  = []
+        konten = []
+        for m in [1, 2, 4, 5, 6]:
+            for _ in range(3):
+                dates.append(f"2024-{m:02d}-15")
+                konten.append("4711")
+
+        df = _make_df(
+            datum=dates,
+            betrag=["500,00"] * len(dates),
+            konto_soll=konten,
+            konto_haben=["1200"] * len(dates),
+            buchungstext=["Buchung"] * len(dates),
+            belegnummer=[f"{i:04d}" for i in range(len(dates))],
+            erfasser=["User"] * len(dates),
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t26_fehlende_monatsbuchung()
+        assert engine.flag_counts["FEHLENDE_MONATSBUCHUNG"] >= 1
+
+    def test_no_regular_account_not_flagged(self):
+        """Konto bucht nur sporadisch → kein Flag."""
+        # Nur in 2 von 6 Monaten → nicht regelmäßig
+        df = _make_df(
+            datum=["2024-01-15", "2024-06-15"],
+            betrag=["500,00", "500,00"],
+            konto_soll=["4711", "4711"],
+            konto_haben=["1200", "1200"],
+            buchungstext=["Buchung", "Buchung"],
             belegnummer=["001", "002"],
-            kreditor=["ACME Corporation", "Bundesamt für Statistik"],
-            erfasser=["User"] * 2,
+            erfasser=["User", "User"],
         )
         engine = AnomalyEngine(df)
         engine._stats()
-        engine._t20_fuzzy_kreditor()
-        matches = engine.stammdaten_report["fuzzy_kreditor_matches"]
-        assert len(matches) == 0
-
-    def test_match_has_required_fields(self):
-        """Each match in stammdaten_report has name_a, name_b, similarity, match_type."""
-        df = _make_df(
-            datum=["2024-01-15"] * 2,
-            betrag=["100,00"] * 2,
-            konto_soll=["4711"] * 2,
-            konto_haben=["1200"] * 2,
-            buchungstext=["Einkauf"] * 2,
-            belegnummer=["001", "002"],
-            kreditor=["Mueller Elektronik GmbH", "Müller Elektronik"],
-            erfasser=["User"] * 2,
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t20_fuzzy_kreditor()
-        matches = engine.stammdaten_report["fuzzy_kreditor_matches"]
-        assert len(matches) >= 1
-        for m in matches:
-            assert "name_a" in m
-            assert "name_b" in m
-            assert "similarity" in m
-            assert "match_type" in m
-
-
-class TestEngineNormVendor:
-    def test_rechtsform_stripped(self):
-        from modules.engine import _norm_vendor
-        assert "gmbh" not in _norm_vendor("Mueller GmbH")
-        assert "kg" not in _norm_vendor("Schmidt GmbH & Co. KG")
-
-    def test_umlaute_converted(self):
-        from modules.engine import _norm_vendor
-        assert "ue" in _norm_vendor("Müller")
-        assert "oe" in _norm_vendor("Böhm")
-        assert "ue" in _norm_vendor("Grün")
-        assert "ae" in _norm_vendor("Bär")
-
-
-class TestEngineTextKreditorStopwords:
-    def test_generic_text_not_flagged(self):
-        """Generic texts like 'Rechnung' should be ignored (stopword)."""
-        df = _make_df(
-            datum=["2024-01-15"] * 12,
-            betrag=["100,00"] * 12,
-            konto_soll=["4711"] * 12,
-            konto_haben=["1200"] * 12,
-            buchungstext=["Rechnung"] * 12,  # generic stopword
-            belegnummer=[f"{i:04d}" for i in range(12)],
-            kreditor=[f"Kreditor {chr(65+i)}" for i in range(12)],
-            erfasser=["User"] * 12,
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t19_text_kreditor_mismatch()
-        assert engine.flag_counts["TEXT_KREDITOR_MISMATCH"] == 0
-
-    def test_short_text_not_flagged(self):
-        """Short texts (<15 chars) should be ignored."""
-        df = _make_df(
-            datum=["2024-01-15"] * 12,
-            betrag=["100,00"] * 12,
-            konto_soll=["4711"] * 12,
-            konto_haben=["1200"] * 12,
-            buchungstext=["Miete Büro"] * 12,  # <15 chars
-            belegnummer=[f"{i:04d}" for i in range(12)],
-            kreditor=[f"Kreditor {chr(65+i)}" for i in range(12)],
-            erfasser=["User"] * 12,
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t19_text_kreditor_mismatch()
-        assert engine.flag_counts["TEXT_KREDITOR_MISMATCH"] == 0
-
-    def test_specific_long_text_still_flagged(self):
-        """Specific long text across ≥3 creditors should be flagged."""
-        # 4 different creditors with same specific long text
-        df = _make_df(
-            datum=["2024-01-15"] * 4,
-            betrag=["100,00"] * 4,
-            konto_soll=["4711"] * 4,
-            konto_haben=["1200"] * 4,
-            buchungstext=["Spezialreinigung der Fassade Nord"] * 4,
-            belegnummer=["001", "002", "003", "004"],
-            kreditor=["Firma A", "Firma B", "Firma C", "Firma D"],
-            erfasser=["User"] * 4,
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t19_text_kreditor_mismatch()
-        assert engine.flag_counts["TEXT_KREDITOR_MISMATCH"] == 4
+        engine._t26_fehlende_monatsbuchung()
+        assert engine.flag_counts["FEHLENDE_MONATSBUCHUNG"] == 0
 
 
 class TestEngineOutputThreshold:
     def test_low_score_not_in_output(self):
-        """Bookings with score < 2.0 should not appear in output (unless critical)."""
-        # 20 distinct bookings — varied amounts, varied dates, varied accounts
-        # Designed to avoid triggering critical flags
+        """Buchungen mit Score < 2.0 erscheinen nicht im Output (außer critical)."""
         df = _make_df(
             datum=[f"2024-{m:02d}-{d:02d}" for m, d in
                    [(1,5),(2,10),(3,15),(4,20),(5,5),(6,10),(7,15),(8,20),
@@ -644,21 +535,18 @@ class TestEngineOutputThreshold:
             erfasser=["UserAlpha"] * 20,
         )
         engine = AnomalyEngine(df)
-        result = engine.run()
-        total = result["statistics"]["total_input"]
+        result  = engine.run()
+        total   = result["statistics"]["total_input"]
         suspicious = result["statistics"]["total_output"]
-        ratio = suspicious / total * 100 if total > 0 else 0
-        # With distinct normal data and threshold 2.0, most should be filtered out
-        assert ratio < 50, f"Ratio {ratio:.1f}% too high for normal data"
+        ratio   = suspicious / total * 100 if total > 0 else 0
+        assert ratio < 50, f"Ratio {ratio:.1f}% zu hoch für normale Daten"
 
     def test_critical_flag_always_in_output(self):
-        """Bookings with critical flags appear even if score < 2.0."""
-        from modules.engine import CRITICAL_FLAGS
-        # A booking with Soll=Haben (critical flag, weight 2.0) should appear
+        """Buchungen mit Critical-Flag erscheinen auch wenn Score < OUTPUT_THRESHOLD."""
+        # STORNO hat Gewicht 1.5 < OUTPUT_THRESHOLD (2.0) → nur via Critical-Pfad im Output
         df = _make_df(
-            konto_soll=["4711"],
-            konto_haben=["4711"],
-            buchungstext=["Spezielle Buchung mit gleichem Konto"],
+            betrag=["100,00"],
+            buchungstext=["Storno Rechnung 001"],
         )
         engine = AnomalyEngine(df)
         result = engine.run()
@@ -667,7 +555,7 @@ class TestEngineOutputThreshold:
 
 class TestEngineFullRun:
     def test_full_run_succeeds(self):
-        """Integration: full engine run doesn't crash."""
+        """Integration: Engine läuft ohne Crash durch."""
         df = _make_df(
             datum=["2024-01-15"] * 10,
             betrag=[f"{i * 100}" for i in range(1, 11)],
@@ -684,7 +572,7 @@ class TestEngineFullRun:
         assert result["statistics"]["total_input"] == 10
 
     def test_empty_df(self):
-        """Edge case: empty DataFrame."""
+        """Edge case: leerer DataFrame."""
         df = pd.DataFrame({
             "datum": [], "betrag": [], "konto_soll": [],
             "konto_haben": [], "buchungstext": [], "belegnummer": [],
@@ -694,8 +582,8 @@ class TestEngineFullRun:
         result = engine.run()
         assert result["statistics"]["total_input"] == 0
 
-    def test_21_test_methods_called(self):
-        """Verify all 21 tests are represented in flag_counts keys."""
+    def test_all_test_methods_called(self):
+        """Alle 14 Tests liefern einen flag_counts-Eintrag."""
         df = _make_df(
             datum=["2024-01-15"] * 10,
             betrag=[f"{i * 100}" for i in range(1, 11)],
@@ -705,25 +593,21 @@ class TestEngineFullRun:
             belegnummer=[f"{i:04d}" for i in range(10)],
             erfasser=["User"] * 10,
         )
-        engine = AnomalyEngine(df)
-        result = engine.run()
-        fc = result["statistics"]["flag_counts"]
-        # All flag names must be present (FUZZY_KREDITOR is Stammdaten, not per-booking)
+        engine  = AnomalyEngine(df)
+        result  = engine.run()
+        fc      = result["statistics"]["flag_counts"]
+
         expected_flags = {
-            "BETRAG_ZSCORE", "BETRAG_IQR", "SELTENE_KONTIERUNG",
-            "WOCHENENDE", "MONATSENDE", "QUARTALSENDE",
-            "AUSSERHALB_GESCHAEFTSZEIT", "NEAR_DUPLICATE",
-            "BENFORD_1ZIFFER", "BENFORD_2ZIFFERN",
-            "RUNDER_BETRAG", "ERFASSER_ANOMALIE", "SPLIT_VERDACHT",
-            "SCHWELLENWERT_CLUSTER", "BELEG_LUECKE",
+            "BETRAG_ZSCORE", "BETRAG_IQR", "NEAR_DUPLICATE",
             "DOPPELTE_BELEGNUMMER", "BELEG_KREDITOR_DUPLIKAT",
-            "STORNO", "NEUER_KREDITOR_HOCH", "SOLL_GLEICH_HABEN",
-            "KONTO_BETRAG_ANOMALIE", "TEXT_KREDITOR_MISMATCH",
-            "LEERER_BUCHUNGSTEXT",
-            "VELOCITY_ANOMALIE",
+            "STORNO", "NEUER_KREDITOR_HOCH", "KONTO_BETRAG_ANOMALIE",
+            "LEERER_BUCHUNGSTEXT", "VELOCITY_ANOMALIE",
+            "RECHNUNGSDATUM_PERIODE", "BUCHUNGSTEXT_PERIODE",
+            "MONATS_ENTWICKLUNG", "FEHLENDE_MONATSBUCHUNG",
         }
-        assert expected_flags == set(fc.keys()), \
-            f"Missing: {expected_flags - set(fc.keys())}, Extra: {set(fc.keys()) - expected_flags}"
-        # stammdaten_report must be present
-        assert "stammdaten_report" in result
-        assert "fuzzy_kreditor_matches" in result["stammdaten_report"]
+        assert expected_flags == set(fc.keys()), (
+            f"Fehlend: {expected_flags - set(fc.keys())}, "
+            f"Überschuss: {set(fc.keys()) - expected_flags}"
+        )
+        assert "stammdaten_report"       in result
+        assert "fuzzy_kreditor_matches"  in result["stammdaten_report"]

@@ -1,0 +1,38 @@
+{
+	"name": "prefilter-api",
+
+	"dockerComposeFile": [
+		"../docker-compose.yml",
+		"docker-compose.yml"
+	],
+
+	"service": "prefilter",
+
+	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+
+	"forwardPorts": [7864],
+
+	"postCreateCommand": "apt-get update && apt-get install -y git && pip install -r requirements.txt",
+
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"GitHub.copilot",
+				"GitHub.copilot-chat",
+				"ms-python.python",
+				"ms-python.pylance",
+				"ms-python.black-formatter",
+				"ms-python.flake8"
+			],
+			"settings": {
+				"python.defaultInterpreterPath": "/usr/local/bin/python",
+				"editor.formatOnSave": true,
+				"[python]": {
+					"editor.defaultFormatter": "ms-python.black-formatter"
+				}
+			}
+		}
+	},
+
+	"remoteUser": "root"
+}

@@ -1,0 +1,130 @@
+"""
+Buchungs-Anomalie Pre-Filter — Zeitreihen-Tests
+
+Tests:
+    MONATS_ENTWICKLUNG      — Z-Score auf monatl. GuV-Konten-Entwicklung
+    FEHLENDE_MONATSBUCHUNG  — Konto fehlt Buchung in Monat, wo sonst aktiv
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+
+from src.config import AnalysisConfig
+from src.tests.base import AnomalyTest, EngineStats
+
+
+class MonatsEntwicklung(AnomalyTest):
+    name = "MONATS_ENTWICKLUNG"
+    weight = 1.5
+    critical = False
+
+    def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
+        has_konto_date = df["_datum"].notna() & (df["_abs"] > 0)
+        subset         = df.loc[has_konto_date].copy()
+
+        if len(subset) < 10:
+            return 0
+
+        # GuV-Konten (konto_soll 40000–79999)
+        konto_num = pd.to_numeric(
+            subset["konto_soll"].astype(str).str.extract(r"(\d+)", expand=False),
+            errors="coerce",
+        )
+        pnl_mask = (konto_num >= 40000) & (konto_num <= 79999)
+        pnl      = subset.loc[pnl_mask].copy()
+
+        if len(pnl) < 10:
+            return 0
+
+        pnl["_ym"] = pnl["_datum"].dt.to_period("M").astype(str)
+
+        monthly = (
+            pnl.groupby(["konto_soll", "_ym"])["_abs"]
+            .sum()
+            .reset_index(name="monatssumme")
+        )
+        konto_stats = (
+            monthly.groupby("konto_soll")["monatssumme"]
+            .agg(ks_mean="mean", ks_std="std", ks_count="count")
+            .reset_index()
+        )
+        konto_stats = konto_stats[
+            (konto_stats["ks_count"] >= config.monats_entwicklung_min_monate)
+            & (konto_stats["ks_std"] > 0)
+        ]
+
+        if konto_stats.empty:
+            return 0
+
+        with_stats = monthly.merge(
+            konto_stats[["konto_soll", "ks_mean", "ks_std"]], on="konto_soll"
+        )
+        with_stats["zscore"] = (
+            (with_stats["monatssumme"] - with_stats["ks_mean"]) / with_stats["ks_std"]
+        )
+        outliers  = with_stats[
+            with_stats["zscore"].abs() > config.monats_entwicklung_zscore
+        ]
+        spike_set = set(zip(outliers["konto_soll"], outliers["_ym"]))
+
+        if not spike_set:
+            return 0
+
+        pnl["_key"]  = list(zip(pnl["konto_soll"], pnl["_ym"]))
+        flagged_sub  = pnl[pnl["_key"].isin(spike_set)]
+        df.loc[flagged_sub.index, f"flag_{self.name}"] = True
+        return int(df[f"flag_{self.name}"].sum())
+
+
+class FehlendeMonatsbuchung(AnomalyTest):
+    name = "FEHLENDE_MONATSBUCHUNG"
+    weight = 1.0
+    critical = False
+
+    def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
+        has_konto_date = (
+            df["_datum"].notna()
+            & (df["konto_soll"].astype(str).str.strip() != "")
+        )
+        subset = df.loc[has_konto_date].copy()
+
+        if len(subset) < 10:
+            return 0
+
+        subset["_ym"] = subset["_datum"].dt.to_period("M")
+        all_periods   = sorted(subset["_ym"].unique())
+        if len(all_periods) < 3:
+            return 0
+
+        konto_month_cnt = subset.groupby("konto_soll")["_ym"].nunique()
+        min_active      = max(3, len(all_periods) * config.fehlende_buchung_min_quote)
+        regular         = konto_month_cnt[konto_month_cnt >= min_active].index
+
+        if regular.empty:
+            return 0
+
+        # Volle Zeitspanne — nur so werden echte Lücken erkannt
+        full_range = list(pd.period_range(all_periods[0], all_periods[-1], freq="M"))
+        prev_of    = {p: full_range[i - 1] for i, p in enumerate(full_range) if i > 0}
+        next_of    = {p: full_range[i + 1] for i, p in enumerate(full_range[:-1])}
+
+        flagged: set[int] = set()
+        for konto in regular:
+            konto_data = subset[subset["konto_soll"] == konto]
+            booked     = set(konto_data["_ym"])
+            idx_by_ym  = konto_data.groupby("_ym").groups
+
+            for period in full_range:
+                if period not in booked:
+                    for adj in (prev_of.get(period), next_of.get(period)):
+                        if adj and adj in idx_by_ym:
+                            flagged.update(idx_by_ym[adj])
+
+        if flagged:
+            df.loc[list(flagged), f"flag_{self.name}"] = True
+        return len(flagged)
+
+
+def get_tests() -> list[AnomalyTest]:
+    return [MonatsEntwicklung(), FehlendeMonatsbuchung()]

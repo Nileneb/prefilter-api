@@ -1,14 +1,64 @@
 services:
-  prefilter:
+  ui:
     build: .
+    command: python app.py
     ports:
       - "7864:7864"
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
+      - API_URL=http://api:8000
+      - LANGDOCK_WEBHOOK_URL=${LANGDOCK_WEBHOOK_URL:-}
+      - GRADIO_USERNAME=${GRADIO_USERNAME:-}
+      - GRADIO_PASSWORD=${GRADIO_PASSWORD:-}
+      - ROOT_PATH=${ROOT_PATH:-}
+    depends_on:
+      api:
+        condition: service_started
+
+  api:
+    build: .
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - REDIS_URL=redis://redis:6379/0
       - LOG_LEVEL=info
       - LANGDOCK_WEBHOOK_URL=${LANGDOCK_WEBHOOK_URL:-}
       - GRADIO_USERNAME=${GRADIO_USERNAME:-}
       - GRADIO_PASSWORD=${GRADIO_PASSWORD:-}
       - ROOT_PATH=${ROOT_PATH:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: celery -A src.worker.celery_app worker --concurrency=4 --loglevel=info
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=info
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

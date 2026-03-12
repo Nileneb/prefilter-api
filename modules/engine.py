@@ -1,851 +1,592 @@
 """
-Buchungs-Anomalie Pre-Filter — Anomaly Engine v3.0
+Buchungs-Anomalie Pre-Filter — Anomaly Engine v4.0
 
-21 statistische Tests, vektorisiert wo möglich.
-Upgrades: RapidFuzz, Benford 2-Ziffern + MAD, erweiterte Belegnummern,
-          Schwellenwert-Cluster, Velocity Check, leere Buchungstexte.
+14 statistische Tests, vollständig vektorisiert (kein iterrows, kein O(n²)).
+Boolean-Spalten statt Python-Listen in DataFrame-Zellen.
+
+Tests (lt. Anomalie_Tests.xlsx + Phase 2):
+    BETRAG_ZSCORE, BETRAG_IQR, NEAR_DUPLICATE, DOPPELTE_BELEGNUMMER,
+    BELEG_KREDITOR_DUPLIKAT, STORNO, NEUER_KREDITOR_HOCH,
+    KONTO_BETRAG_ANOMALIE, LEERER_BUCHUNGSTEXT, VELOCITY_ANOMALIE,
+    RECHNUNGSDATUM_PERIODE, BUCHUNGSTEXT_PERIODE,
+    MONATS_ENTWICKLUNG, FEHLENDE_MONATSBUCHUNG
 """
 
-import re
-import math
 import logging
-from datetime import timedelta
-from collections import defaultdict
+import re
 
-import numpy as np
 import pandas as pd
-from rapidfuzz import fuzz, process as rf_process
-from rapidfuzz.distance import JaroWinkler
 
-from modules.parser import COLUMN_ALIASES, parse_german_number, parse_date
+from modules.parser import COLUMN_ALIASES, parse_german_number_series, parse_date_series
 
 logger = logging.getLogger("prefilter")
 
-# ── Weights & Config ────────────────────────────────────────
-# Note: FUZZY_KREDITOR is a Stammdaten-level finding (reported
-# once per name pair), NOT a per-booking flag.  It therefore has
-# no weight here and does not inflate individual scores.
-WEIGHTS = {
-    "BETRAG_ZSCORE":             2.0,
-    "BETRAG_IQR":                1.5,
-    "SELTENE_KONTIERUNG":        1.5,
-    "WOCHENENDE":                1.0,
-    "AUSSERHALB_GESCHAEFTSZEIT": 1.5,
-    "MONATSENDE":                0.25,
-    "QUARTALSENDE":              0.5,
-    "NEAR_DUPLICATE":            2.0,
-    "BENFORD_1ZIFFER":           1.0,
-    "BENFORD_2ZIFFERN":          1.5,
-    "RUNDER_BETRAG":             1.0,
-    "ERFASSER_ANOMALIE":         1.5,
-    "SPLIT_VERDACHT":            2.0,
-    "SCHWELLENWERT_CLUSTER":     2.0,
-    "BELEG_LUECKE":              1.0,
-    "DOPPELTE_BELEGNUMMER":      2.0,
-    "BELEG_KREDITOR_DUPLIKAT":   2.5,
-    "STORNO":                    1.5,
-    "NEUER_KREDITOR_HOCH":       2.5,
-    "SOLL_GLEICH_HABEN":         2.0,
-    "KONTO_BETRAG_ANOMALIE":     2.0,
-    "TEXT_KREDITOR_MISMATCH":     1.5,
-    "LEERER_BUCHUNGSTEXT":       1.0,
-    "VELOCITY_ANOMALIE":         1.5,
+# ── Weights & Config ─────────────────────────────────────────────────────────
+WEIGHTS: dict[str, float] = {
+    "BETRAG_ZSCORE":           2.0,
+    "BETRAG_IQR":              1.5,
+    "NEAR_DUPLICATE":          2.0,
+    "DOPPELTE_BELEGNUMMER":    2.0,
+    "BELEG_KREDITOR_DUPLIKAT": 2.5,
+    "STORNO":                  1.5,
+    "NEUER_KREDITOR_HOCH":     2.5,
+    "KONTO_BETRAG_ANOMALIE":   2.0,
+    "LEERER_BUCHUNGSTEXT":     1.0,
+    "VELOCITY_ANOMALIE":       1.5,
+    # Phase 2 — neue Tests
+    "RECHNUNGSDATUM_PERIODE":  1.5,
+    "BUCHUNGSTEXT_PERIODE":    1.0,
+    "MONATS_ENTWICKLUNG":      1.5,
+    "FEHLENDE_MONATSBUCHUNG":  1.0,
 }
 
-CRITICAL_FLAGS = {
-    "BETRAG_ZSCORE", "NEAR_DUPLICATE", "SPLIT_VERDACHT",
-    "NEUER_KREDITOR_HOCH", "STORNO", "DOPPELTE_BELEGNUMMER",
-    "BELEG_KREDITOR_DUPLIKAT", "SOLL_GLEICH_HABEN",
-    "SCHWELLENWERT_CLUSTER",
+CRITICAL_FLAGS: set[str] = {
+    "BETRAG_ZSCORE", "NEAR_DUPLICATE", "NEUER_KREDITOR_HOCH",
+    "STORNO", "DOPPELTE_BELEGNUMMER", "BELEG_KREDITOR_DUPLIKAT",
 }
-
-# Configurable approval thresholds for split-detection
-APPROVAL_THRESHOLDS = [5000, 10000, 25000, 50000]
-
-# Rechtsformen to strip for fuzzy vendor matching
-RECHTSFORMEN = [
-    "gmbh", "gmbh & co. kg", "gmbh & co kg", "gmbh&co.kg",
-    "ag", "e.v.", "ev", "e.v", "kg", "ohg", "gbr", "ug",
-    "mbh", "co.", "inc.", "ltd.", "ltd", "se", "sa",
-    "& co.", "&co.", "co", "corp.", "corp",
-]
 
 OUTPUT_THRESHOLD = 2.0
 MAX_OUTPUT_ROWS  = 1000
+NUM_TESTS        = 14
 
-NUM_TESTS = 21
-
-
-def _norm_vendor(name: str) -> str:
-    """Normalise vendor name for fuzzy comparison."""
-    s = name.lower().strip()
-    # Umlaute
-    for old, new in [("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")]:
-        s = s.replace(old, new)
-    # Remove Rechtsformen
-    for rf in sorted(RECHTSFORMEN, key=len, reverse=True):
-        s = s.replace(rf, " ")
-    # Collapse whitespace and punctuation
-    s = re.sub(r"[^a-z0-9]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+_FLAG_NAMES = list(WEIGHTS.keys())
 
 
-# ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # ANOMALY ENGINE
-# ══════════════════════════════════════════════════════════════
-# Stopwords for TEXT_KREDITOR_MISMATCH — generic booking texts that
-# naturally appear across many creditors and should not trigger alerts.
-TEXT_STOPWORDS = {
-    "rechnung", "miete", "wartung", "zahlung", "gutschrift",
-    "überweisung", "ueberweisung", "dauerauftrag", "abbuchung",
-    "lastschrift", "gehalt", "lohn", "provision", "honorar",
-    "abrechnung", "ratenzahlung", "vorauszahlung", "anzahlung",
-    "kaution", "beitrag", "mitgliedsbeitrag", "spende",
-    "erstattung", "rückerstattung", "rueckerstattung",
-    "porto", "versand", "fracht", "nebenkosten",
-    "strom", "gas", "wasser", "telefon", "internet",
-    "reinigung", "entsorgung", "reparatur", "service",
-    "beratung", "schulung", "lizenz", "miete büro",
-    "büromaterial", "bueromaterial", "verbrauchsmaterial",
-}
-
-# Minimum text length for TEXT_KREDITOR_MISMATCH analysis
-TEXT_MISMATCH_MIN_LEN = 15
-
+# ══════════════════════════════════════════════════════════════════════════════
 
 class AnomalyEngine:
     def __init__(self, df: pd.DataFrame):
         self.df = df.copy()
         self.logs: list[str] = []
         self.flag_counts: dict[str, int] = {}
-        self.stammdaten_report: dict[str, list] = {
-            "fuzzy_kreditor_matches": [],
-        }
+        self.stammdaten_report: dict[str, list] = {"fuzzy_kreditor_matches": []}
         self._prepare()
 
-    # ── helpers ──────────────────────────────────────────────
-    def _log(self, msg: str):
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _log(self, msg: str) -> None:
         self.logs.append(msg)
         logger.info(msg)
 
-    def _flag(self, idx, name: str):
-        w = WEIGHTS.get(name, 1.0)
-        flags: list = self.df.at[idx, "_flags"]
-        if name not in flags:
-            flags.append(name)
-            self.df.at[idx, "_score"] += w
-
-    def _flag_mask(self, mask: pd.Series, name: str):
-        """Vectorised flag: apply flag to all rows where mask is True."""
-        w = WEIGHTS.get(name, 1.0)
-        for idx in self.df.index[mask]:
-            flags: list = self.df.at[idx, "_flags"]
-            if name not in flags:
-                flags.append(name)
-                self.df.at[idx, "_score"] += w
-
-    def _prepare(self):
+    def _prepare(self) -> None:
         df = self.df
         for col in COLUMN_ALIASES:
             if col not in df.columns:
                 df[col] = ""
         df.fillna("", inplace=True)
-        df["_betrag"] = df["betrag"].apply(parse_german_number)
-        df["_abs"]    = df["_betrag"].abs()
-        df["_datum"]  = df["datum"].apply(parse_date)
-        df["_score"]  = 0.0
-        df["_flags"]  = [[] for _ in range(len(df))]
-        self._log(f"Geladen: {len(df)} Buchungen")
-        self._log(f"Spalten: {', '.join(c for c in df.columns if not c.startswith('_'))}")
 
-    def _stats(self):
+        # Vektorisiertes Parsing (kein .apply() per Zeile)
+        df["_betrag"] = parse_german_number_series(df["betrag"]).fillna(0.0)
+        df["_abs"]    = df["_betrag"].abs()
+        df["_datum"]  = parse_date_series(df["datum"])
+        df["_score"]  = 0.0
+
+        # Boolean-Spalten statt Python-Listen in Zellen — das ist der Kern-Fix
+        # für 24h+ Laufzeit. _flag_mask() / _flag() entfallen komplett.
+        for name in _FLAG_NAMES:
+            df[f"flag_{name}"] = False
+
+        visible_cols = [c for c in df.columns if not c.startswith("_") and not c.startswith("flag_")]
+        self._log(f"Geladen: {len(df)} Buchungen")
+        self._log(f"Spalten: {', '.join(visible_cols)}")
+
+    def _compute_scores(self) -> None:
+        """Score = Σ(flag_X * weight_X) — vollständig vektorisiert."""
+        score = pd.Series(0.0, index=self.df.index)
+        for name, weight in WEIGHTS.items():
+            score += self.df[f"flag_{name}"].astype(float) * weight
+        self.df["_score"] = score
+
+    def _stats(self) -> None:
         vals = self.df.loc[self.df["_abs"] > 0, "_abs"]
-        self.b_mean  = vals.mean() if len(vals) else 0
-        self.b_std   = vals.std()  if len(vals) > 1 else 0
-        q1 = vals.quantile(0.25) if len(vals) else 0
-        q3 = vals.quantile(0.75) if len(vals) else 0
+        self.b_mean  = float(vals.mean()) if len(vals) else 0.0
+        self.b_std   = float(vals.std())  if len(vals) > 1 else 0.0
+        q1 = float(vals.quantile(0.25)) if len(vals) else 0.0
+        q3 = float(vals.quantile(0.75)) if len(vals) else 0.0
         self.b_iqr   = q3 - q1
         self.b_fence = q3 + 1.5 * self.b_iqr
-        self._log(f"Beträge: n={len(vals)}, μ={self.b_mean:.0f}, σ={self.b_std:.0f}, "
-                  f"Q1={q1:.0f}, Q3={q3:.0f}, IQR={self.b_iqr:.0f}, Fence={self.b_fence:.0f}")
+        self._log(
+            f"Beträge: n={len(vals)}, μ={self.b_mean:.0f}, σ={self.b_std:.0f}, "
+            f"Q1={q1:.0f}, Q3={q3:.0f}, IQR={self.b_iqr:.0f}, Fence={self.b_fence:.0f}"
+        )
 
-    # ══════════════════════════════════════════════════════════
-    # 21 Tests
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════
+    # 10 Tests — alle ohne iterrows(), kein O(n²)
+    # ══════════════════════════════════════════════════════════════════════════
 
-    def _t01_zscore(self):
-        """Betrag Z-Score > 2.5 — vectorised."""
+    def _t01_zscore(self) -> None:
+        """Betrag Z-Score > 2.5 — vollständig vektorisiert."""
         df = self.df
         if self.b_std > 0:
-            z = (df["_abs"] - self.b_mean) / self.b_std
+            z    = (df["_abs"] - self.b_mean) / self.b_std
             mask = (df["_abs"] > 0) & (z > 2.5)
         else:
             mask = pd.Series(False, index=df.index)
-        self._flag_mask(mask, "BETRAG_ZSCORE")
+        df.loc[mask, "flag_BETRAG_ZSCORE"] = True
         c = int(mask.sum())
         self.flag_counts["BETRAG_ZSCORE"] = c
         self._log(f"[01/{NUM_TESTS}] BETRAG_ZSCORE: {c}")
 
-    def _t02_iqr(self):
-        """Betrag > IQR fence — vectorised."""
+    def _t02_iqr(self) -> None:
+        """Betrag > IQR-Fence — vollständig vektorisiert."""
         df = self.df
         if self.b_iqr > 0:
             mask = df["_abs"] > self.b_fence
         else:
             mask = pd.Series(False, index=df.index)
-        self._flag_mask(mask, "BETRAG_IQR")
+        df.loc[mask, "flag_BETRAG_IQR"] = True
         c = int(mask.sum())
         self.flag_counts["BETRAG_IQR"] = c
         self._log(f"[02/{NUM_TESTS}] BETRAG_IQR: {c}")
 
-    def _t03_seltene_kontierung(self):
-        """Rare account pair — vectorised."""
-        df = self.df
-        df["_konto_pair"] = df["konto_soll"].astype(str) + "→" + df["konto_haben"].astype(str)
-        counts = df["_konto_pair"].value_counts()
-        threshold = max(2, math.ceil(len(df) * 0.01))
-        mapped = df["_konto_pair"].map(counts)
-        mask = mapped <= threshold
-        self._flag_mask(mask, "SELTENE_KONTIERUNG")
-        c = int(mask.sum())
-        self.flag_counts["SELTENE_KONTIERUNG"] = c
-        self._log(f"[03/{NUM_TESTS}] SELTENE_KONTIERUNG: {c}  (Schwelle: ≤{threshold})")
+    def _t06_near_duplicate(self) -> None:
+        """Gleicher Betrag + Konten innerhalb 3 Tagen.
 
-    def _t04_zeitlich(self):
-        """Weekend, month-end, quarter-end — vectorised."""
-        df = self.df
-        has_date = df["_datum"].notna()
-        weekdays = df.loc[has_date, "_datum"].apply(lambda d: d.weekday())
+        Sortiertes Sliding-Window pro Gruppe → O(n log n) statt O(n²).
+        Fehlende Daten: nur mit anderen fehlenden Daten gematcht."""
+        df      = self.df
+        flagged: set[int] = set()
 
-        we_mask = pd.Series(False, index=df.index)
-        we_mask.loc[has_date] = weekdays >= 5
-        self._flag_mask(we_mask, "WOCHENENDE")
-
-        def _is_month_end(d):
-            last = (d.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-            return d.day >= last.day - 2
-
-        me_mask = pd.Series(False, index=df.index, dtype=object)
-        me_vals = df.loc[has_date, "_datum"].apply(_is_month_end)
-        for idx in me_vals.index:
-            me_mask.at[idx] = bool(me_vals.at[idx])
-        me_mask = me_mask.astype(bool)
-        self._flag_mask(me_mask, "MONATSENDE")
-
-        qe_mask = me_mask & df["_datum"].apply(
-            lambda d: d.month in (3, 6, 9, 12) if d else False
-        )
-        self._flag_mask(qe_mask, "QUARTALSENDE")
-
-        self.flag_counts["WOCHENENDE"]   = int(we_mask.sum())
-        self.flag_counts["MONATSENDE"]   = int(me_mask.sum())
-        self.flag_counts["QUARTALSENDE"] = int(qe_mask.sum())
-        self._log(f"[04/{NUM_TESTS}] WOCHENENDE: {self.flag_counts['WOCHENENDE']}, "
-                  f"MONATSENDE: {self.flag_counts['MONATSENDE']}, "
-                  f"QUARTALSENDE: {self.flag_counts['QUARTALSENDE']}")
-
-    def _t05_ausserhalb_geschaeftszeit(self):
-        """Buchungen außerhalb 6:00-22:00."""
-        df = self.df
-        c = 0
-        for i, row in df.iterrows():
-            d = row["_datum"]
-            if d is not None and (d.hour < 6 or d.hour >= 22) and \
-               (d.hour != 0 or d.minute != 0 or d.second != 0):
-                self._flag(i, "AUSSERHALB_GESCHAEFTSZEIT")
-                c += 1
-        self.flag_counts["AUSSERHALB_GESCHAEFTSZEIT"] = c
-        self._log(f"[05/{NUM_TESTS}] AUSSERHALB_GESCHAEFTSZEIT: {c}")
-
-    def _t06_near_duplicate(self):
-        """Near-duplicate: same amount+accounts within 3 days.
-        Counts unique flagged bookings. Missing date only matches if both missing."""
-        df = self.df
-        flagged = set()
-        groups: dict[str, list] = {}
-        for i, row in df.iterrows():
-            key = f"{row['_abs']}|{row['konto_soll']}|{row['konto_haben']}"
-            groups.setdefault(key, []).append(i)
-
-        for idxs in groups.values():
-            if len(idxs) < 2:
+        for _, grp in df.groupby(["_abs", "konto_soll", "konto_haben"], sort=False):
+            if len(grp) < 2:
                 continue
-            for a in range(len(idxs)):
-                for b in range(a + 1, len(idxs)):
-                    ia, ib = idxs[a], idxs[b]
-                    da, db = df.at[ia, "_datum"], df.at[ib, "_datum"]
-                    is_dup = False
-                    if da is not None and db is not None:
-                        if abs((da - db).days) <= 3:
-                            is_dup = True
-                    elif da is None and db is None:
-                        is_dup = True
-                    if is_dup:
-                        self._flag(ia, "NEAR_DUPLICATE")
-                        self._flag(ib, "NEAR_DUPLICATE")
-                        flagged.add(ia)
-                        flagged.add(ib)
 
+            # Zeilen ohne Datum → gegenseitig flaggen wenn ≥2
+            undated = grp[grp["_datum"].isna()]
+            if len(undated) >= 2:
+                flagged.update(undated.index)
+
+            # Zeilen mit Datum → sortiertes Sliding-Window (3-Tage-Fenster)
+            dated = grp[grp["_datum"].notna()].sort_values("_datum")
+            if len(dated) < 2:
+                continue
+            idxs  = dated.index.tolist()
+            dvals = dated["_datum"].tolist()
+            for i in range(len(dvals)):
+                for j in range(i + 1, len(dvals)):
+                    if (dvals[j] - dvals[i]).days > 3:
+                        break   # sortiert → restliche j ebenfalls > 3 Tage
+                    flagged.add(idxs[i])
+                    flagged.add(idxs[j])
+
+        if flagged:
+            df.loc[list(flagged), "flag_NEAR_DUPLICATE"] = True
         c = len(flagged)
         self.flag_counts["NEAR_DUPLICATE"] = c
-        self._log(f"[06/{NUM_TESTS}] NEAR_DUPLICATE: {c}")
+        self._log(f"[03/{NUM_TESTS}] NEAR_DUPLICATE: {c}")
 
-    def _t07_benford(self):
-        """Benford's law — 1-digit + 2-digit test with MAD (Nigrini).
-
-        Amounts >10 only. MAD thresholds per Nigrini:
-        1-digit: >0.015 = nonconformity
-        2-digit: >0.012 = nonconformity"""
-        df = self.df
-        benford_vals = df.loc[df["_abs"] > 10, "_abs"]
-
-        # ── 1-digit test ──
-        expected_1 = {d: math.log10(1 + 1/d) for d in range(1, 10)}
-        fd1_counts = {d: 0 for d in range(1, 10)}
-        total_1 = 0
-        for val in benford_vals:
-            first = int(str(int(val))[0])
-            if 1 <= first <= 9:
-                fd1_counts[first] += 1
-                total_1 += 1
-
-        c1 = 0
-        deviant_1 = set()
-        mad_1 = 0.0
-        if total_1 > 50:
-            deviations = []
-            for d in range(1, 10):
-                dev = abs(fd1_counts[d] / total_1 - expected_1[d])
-                deviations.append(dev)
-                if dev > 0.08:
-                    deviant_1.add(d)
-            mad_1 = sum(deviations) / len(deviations)
-
-            if mad_1 > 0.015 and deviant_1:
-                self._log(f"    Benford 1-Ziffer MAD={mad_1:.4f}, Abweichungen: {deviant_1}")
-                for i, row in df.iterrows():
-                    if row["_abs"] > 10:
-                        first = int(str(int(row["_abs"]))[0])
-                        if first in deviant_1:
-                            self._flag(i, "BENFORD_1ZIFFER")
-                            c1 += 1
-        self.flag_counts["BENFORD_1ZIFFER"] = c1
-        self._log(f"[07/{NUM_TESTS}] BENFORD_1ZIFFER: {c1}  (MAD={mad_1:.4f}, n={total_1})")
-
-        # ── 2-digit test ──
-        expected_2 = {}
-        for d in range(10, 100):
-            expected_2[d] = math.log10(1 + 1/d)
-        fd2_counts = {d: 0 for d in range(10, 100)}
-        total_2 = 0
-        for val in benford_vals:
-            s = str(int(val))
-            if len(s) >= 2:
-                two = int(s[:2])
-                if 10 <= two <= 99:
-                    fd2_counts[two] += 1
-                    total_2 += 1
-
-        c2 = 0
-        deviant_2 = set()
-        mad_2 = 0.0
-        if total_2 > 100:
-            deviations = []
-            for d in range(10, 100):
-                dev = abs(fd2_counts[d] / total_2 - expected_2[d])
-                deviations.append(dev)
-                if dev > 0.03 and fd2_counts[d] / total_2 > 2 * expected_2[d]:
-                    deviant_2.add(d)
-            mad_2 = sum(deviations) / len(deviations)
-
-            if mad_2 > 0.012 and deviant_2:
-                self._log(f"    Benford 2-Ziffern MAD={mad_2:.4f}, Abweichungen: "
-                          f"{sorted(deviant_2)}")
-                for i, row in df.iterrows():
-                    if row["_abs"] > 10:
-                        s = str(int(row["_abs"]))
-                        if len(s) >= 2:
-                            two = int(s[:2])
-                            if two in deviant_2:
-                                self._flag(i, "BENFORD_2ZIFFERN")
-                                c2 += 1
-        self.flag_counts["BENFORD_2ZIFFERN"] = c2
-        self._log(f"[08/{NUM_TESTS}] BENFORD_2ZIFFERN: {c2}  (MAD={mad_2:.4f}, n={total_2})")
-
-    def _t08_runder_betrag(self):
-        """Round amounts — vectorised."""
-        df = self.df
-        mask = ((df["_abs"] >= 5000) & (df["_abs"] % 1000 == 0)) | \
-               ((df["_abs"] >= 1000) & (df["_abs"] % 500 == 0))
-        self._flag_mask(mask, "RUNDER_BETRAG")
-        c = int(mask.sum())
-        self.flag_counts["RUNDER_BETRAG"] = c
-        self._log(f"[09/{NUM_TESTS}] RUNDER_BETRAG: {c}")
-
-    def _t09_erfasser(self):
-        """Rare user (≤3% of bookings) — vectorised."""
-        df = self.df
-        erf_counts = df.loc[df["erfasser"] != "", "erfasser"].value_counts()
-        erf_total = erf_counts.sum()
-        threshold = max(3, math.ceil(erf_total * 0.03))
-        has_erf = df["erfasser"] != ""
-        mapped = df["erfasser"].map(erf_counts).fillna(0)
-        mask = has_erf & (mapped <= threshold)
-        self._flag_mask(mask, "ERFASSER_ANOMALIE")
-        c = int(mask.sum())
-        self.flag_counts["ERFASSER_ANOMALIE"] = c
-        self._log(f"[10/{NUM_TESTS}] ERFASSER_ANOMALIE: {c}  (Schwelle: ≤{threshold})")
-
-    def _t10_split(self):
-        """Split booking suspicion (≥3 bookings same day/actor/account)."""
-        df = self.df
-        c = 0
-        groups: dict[str, list] = {}
-        for i, row in df.iterrows():
-            d = row["_datum"]
-            dk = d.strftime("%Y-%m-%d") if d else "nodate"
-            actor = row["kreditor"] or row["erfasser"] or "unknown"
-            key = f"{dk}|{actor}|{row['konto_soll']}"
-            groups.setdefault(key, []).append(i)
-        for idxs in groups.values():
-            if len(idxs) >= 3:
-                for i in idxs:
-                    self._flag(i, "SPLIT_VERDACHT")
-                    c += 1
-        self.flag_counts["SPLIT_VERDACHT"] = c
-        self._log(f"[11/{NUM_TESTS}] SPLIT_VERDACHT: {c}")
-
-    def _t11_schwellenwert_cluster(self):
-        """Cluster of amounts just below approval thresholds.
-
-        Flags when >5% of bookings fall in the 90-100% band below
-        a configurable threshold (e.g. 4500-5000 for a 5000 limit)."""
-        df = self.df
-        total_with_amount = int((df["_abs"] > 0).sum())
-        if total_with_amount < 20:
-            self.flag_counts["SCHWELLENWERT_CLUSTER"] = 0
-            self._log(f"[12/{NUM_TESTS}] SCHWELLENWERT_CLUSTER: 0  (zu wenig Daten)")
-            return
-
-        c = 0
-        flagged_thresholds = []
-        for threshold in APPROVAL_THRESHOLDS:
-            lower = threshold * 0.90
-            band_mask = (df["_abs"] >= lower) & (df["_abs"] < threshold)
-            band_count = int(band_mask.sum())
-            band_pct = band_count / total_with_amount * 100
-
-            if band_count >= 3 and band_pct > 5:
-                flagged_thresholds.append(f"{threshold} ({band_count}x, {band_pct:.1f}%)")
-                self._flag_mask(band_mask, "SCHWELLENWERT_CLUSTER")
-                c += band_count
-
-        self.flag_counts["SCHWELLENWERT_CLUSTER"] = c
-        if flagged_thresholds:
-            self._log(f"    Schwellenwerte: {', '.join(flagged_thresholds)}")
-        self._log(f"[12/{NUM_TESTS}] SCHWELLENWERT_CLUSTER: {c}")
-
-    def _t12_beleg_luecke(self):
-        """Gaps >5 in sequential document numbers."""
-        entries = []
-        for i, row in self.df.iterrows():
-            m = re.search(r"(\d+)", str(row["belegnummer"]))
-            if m:
-                entries.append((int(m.group(1)), i))
-        entries.sort()
-        c = 0
-        if len(entries) > 10:
-            for j in range(1, len(entries)):
-                gap = entries[j][0] - entries[j - 1][0]
-                if gap > 5:
-                    self._flag(entries[j - 1][1], "BELEG_LUECKE")
-                    self._flag(entries[j][1], "BELEG_LUECKE")
-                    c += 1
-        self.flag_counts["BELEG_LUECKE"] = c
-        self._log(f"[13/{NUM_TESTS}] BELEG_LUECKE: {c}")
-
-    def _t13_doppelte_belegnummer(self):
-        """Duplicate document numbers — exact duplicates."""
-        df = self.df
+    def _t13_doppelte_belegnummer(self) -> None:
+        """Doppelte Belegnummern — vollständig vektorisiert."""
+        df    = self.df
         beleg = df["belegnummer"].astype(str).str.strip()
-        has_beleg = beleg != ""
-        dups = beleg[has_beleg & beleg.duplicated(keep=False)]
-        c = 0
-        for idx in dups.index:
-            self._flag(idx, "DOPPELTE_BELEGNUMMER")
-            c += 1
+        mask  = (beleg != "") & beleg.duplicated(keep=False)
+        df.loc[mask, "flag_DOPPELTE_BELEGNUMMER"] = True
+        c = int(mask.sum())
         self.flag_counts["DOPPELTE_BELEGNUMMER"] = c
-        self._log(f"[14/{NUM_TESTS}] DOPPELTE_BELEGNUMMER: {c}")
+        self._log(f"[04/{NUM_TESTS}] DOPPELTE_BELEGNUMMER: {c}")
 
-    def _t14_beleg_kreditor_duplikat(self):
-        """Same doc# + same creditor, OR same creditor + same amount + date ≤7d.
+    def _t14_beleg_kreditor_duplikat(self) -> None:
+        """Gleiche Belegnr.+Kreditor ODER gleicher Kreditor+Betrag innerhalb 7 Tagen.
 
-        Two-level check for likely double payments."""
-        df = self.df
-        c = 0
-        flagged = set()
+        Level 1: vollständig vektorisiert.
+        Level 2: sortiertes Sliding-Window pro (Kreditor, Betrag)-Gruppe → O(n log n)."""
+        df      = self.df
+        flagged: set[int] = set()
+        beleg   = df["belegnummer"].astype(str).str.strip()
+        kred    = df["kreditor"].astype(str).str.strip()
 
-        # Level 1: same belegnummer + same kreditor
-        has_both = (df["belegnummer"].astype(str).str.strip() != "") & \
-                   (df["kreditor"].astype(str).str.strip() != "")
-        subset = df.loc[has_both].copy()
-        if not subset.empty:
-            subset["_bk"] = subset["belegnummer"].astype(str).str.strip() + "|" + \
-                            subset["kreditor"].astype(str).str.strip()
-            bk_dups = subset["_bk"][subset["_bk"].duplicated(keep=False)]
-            for idx in bk_dups.index:
-                self._flag(idx, "BELEG_KREDITOR_DUPLIKAT")
-                flagged.add(idx)
+        # Level 1: gleiche Belegnr. + gleicher Kreditor (vektorisiert)
+        has_both = (beleg != "") & (kred != "")
+        if has_both.any():
+            bk          = beleg + "|" + kred
+            bk_dup_mask = has_both & bk.duplicated(keep=False)
+            flagged.update(df.index[bk_dup_mask])
 
-        # Level 2: same kreditor + same amount + date within 7 days
-        has_kred_amt = (df["kreditor"].astype(str).str.strip() != "") & (df["_abs"] > 0)
-        kred_groups: dict[str, list] = {}
-        for i, row in df.loc[has_kred_amt].iterrows():
-            key = f"{row['kreditor']}|{row['_abs']}"
-            kred_groups.setdefault(key, []).append(i)
-
-        for idxs in kred_groups.values():
-            if len(idxs) < 2:
+        # Level 2: gleicher Kreditor + gleicher Betrag + Datum ≤7 Tage
+        has_ka = (kred != "") & (df["_abs"] > 0)
+        for _, grp in df.loc[has_ka].groupby(["kreditor", "_abs"], sort=False):
+            if len(grp) < 2:
                 continue
-            for a in range(len(idxs)):
-                for b in range(a + 1, len(idxs)):
-                    ia, ib = idxs[a], idxs[b]
-                    da, db = df.at[ia, "_datum"], df.at[ib, "_datum"]
-                    if da is not None and db is not None and abs((da - db).days) <= 7:
-                        if ia not in flagged:
-                            self._flag(ia, "BELEG_KREDITOR_DUPLIKAT")
-                            flagged.add(ia)
-                        if ib not in flagged:
-                            self._flag(ib, "BELEG_KREDITOR_DUPLIKAT")
-                            flagged.add(ib)
+            dated = grp[grp["_datum"].notna()].sort_values("_datum")
+            if len(dated) < 2:
+                continue
+            idxs  = dated.index.tolist()
+            dvals = dated["_datum"].tolist()
+            for i in range(len(dvals)):
+                for j in range(i + 1, len(dvals)):
+                    if (dvals[j] - dvals[i]).days > 7:
+                        break
+                    flagged.add(idxs[i])
+                    flagged.add(idxs[j])
 
+        if flagged:
+            df.loc[list(flagged), "flag_BELEG_KREDITOR_DUPLIKAT"] = True
         c = len(flagged)
         self.flag_counts["BELEG_KREDITOR_DUPLIKAT"] = c
-        self._log(f"[15/{NUM_TESTS}] BELEG_KREDITOR_DUPLIKAT: {c}")
+        self._log(f"[05/{NUM_TESTS}] BELEG_KREDITOR_DUPLIKAT: {c}")
 
-    def _t15_storno(self):
-        """Storno/reversal — 'gutschrift' only flagged if amount unusual."""
-        df = self.df
-        hard_patterns = ["storno", "korrektur", "rückbuchung", "rueckbuchung"]
-        c = 0
+    def _t15_storno(self) -> None:
+        """Storno/Umkehrbuchungen — vollständig vektorisiert.
+        'Gutschrift' nur flaggen wenn Betrag > μ+σ."""
+        df                  = self.df
+        txt                 = df["buchungstext"].astype(str).str.lower()
         gutschrift_schwelle = self.b_mean + self.b_std if self.b_std > 0 else float("inf")
 
-        for i, row in df.iterrows():
-            txt = str(row["buchungstext"]).lower()
-            is_storno = False
-            if any(p in txt for p in hard_patterns) or row["_betrag"] < 0:
-                is_storno = True
-            elif "gutschrift" in txt and row["_abs"] > gutschrift_schwelle:
-                is_storno = True
-            if is_storno:
-                self._flag(i, "STORNO")
-                c += 1
-        self.flag_counts["STORNO"] = c
-        self._log(f"[16/{NUM_TESTS}] STORNO: {c}  (Gutschrift-Schwelle: >{gutschrift_schwelle:.0f})")
-
-    def _t16_neuer_kreditor_hoch(self):
-        """New creditor (≤2 bookings) with high amount."""
-        df = self.df
-        kred_counts = df.loc[df["kreditor"] != "", "kreditor"].value_counts()
-        schwelle = self.b_mean + 1.5 * self.b_std if self.b_std > 0 else float("inf")
-        self._log(f"    Neuer-Kreditor Schwelle: ≤2 Buchungen + Betrag > {schwelle:.0f}")
-        c = 0
-        for i, row in df.iterrows():
-            k = row["kreditor"]
-            if k and kred_counts.get(k, 0) <= 2 and row["_abs"] > schwelle:
-                self._flag(i, "NEUER_KREDITOR_HOCH")
-                c += 1
-        self.flag_counts["NEUER_KREDITOR_HOCH"] = c
-        self._log(f"[17/{NUM_TESTS}] NEUER_KREDITOR_HOCH: {c}")
-
-    def _t17_soll_gleich_haben(self):
-        """Debit account = Credit account."""
-        df = self.df
-        soll = df["konto_soll"].astype(str).str.strip()
-        haben = df["konto_haben"].astype(str).str.strip()
-        has_both = (soll != "") & (haben != "")
-        mask = has_both & (soll == haben)
-        self._flag_mask(mask, "SOLL_GLEICH_HABEN")
+        hard_mask       = txt.str.contains(
+            r"storno|korrektur|r[uü]ckbuchung", regex=True, na=False
+        )
+        neg_mask        = df["_betrag"] < 0
+        gutschrift_mask = (
+            txt.str.contains("gutschrift", na=False)
+            & (df["_abs"] > gutschrift_schwelle)
+        )
+        mask = hard_mask | neg_mask | gutschrift_mask
+        df.loc[mask, "flag_STORNO"] = True
         c = int(mask.sum())
-        self.flag_counts["SOLL_GLEICH_HABEN"] = c
-        self._log(f"[18/{NUM_TESTS}] SOLL_GLEICH_HABEN: {c}")
+        self.flag_counts["STORNO"] = c
+        self._log(f"[06/{NUM_TESTS}] STORNO: {c}  (Gutschrift-Schwelle: >{gutschrift_schwelle:.0f})")
 
-    def _t18_konto_betrag_anomalie(self):
-        """Per-account amount plausibility (>3σ above account mean)."""
-        df = self.df
+    def _t16_neuer_kreditor_hoch(self) -> None:
+        """Neuer Kreditor (≤2 Buchungen) mit hohem Betrag — vollständig vektorisiert."""
+        df        = self.df
+        has_kred  = df["kreditor"].astype(str).str.strip() != ""
+        kred_cnt  = df.loc[has_kred, "kreditor"].value_counts()
+        schwelle  = self.b_mean + 1.5 * self.b_std if self.b_std > 0 else float("inf")
+        self._log(f"    Neuer-Kreditor Schwelle: ≤2 Buchungen + Betrag > {schwelle:.0f}")
+        mapped   = df["kreditor"].map(kred_cnt).fillna(0)
+        mask     = has_kred & (mapped <= 2) & (df["_abs"] > schwelle)
+        df.loc[mask, "flag_NEUER_KREDITOR_HOCH"] = True
+        c = int(mask.sum())
+        self.flag_counts["NEUER_KREDITOR_HOCH"] = c
+        self._log(f"[07/{NUM_TESTS}] NEUER_KREDITOR_HOCH: {c}")
+
+    def _t18_konto_betrag_anomalie(self) -> None:
+        """Betrag >3σ über Konto-Durchschnitt — vectorised Join."""
+        df        = self.df
         has_konto = df["konto_soll"].astype(str).str.strip() != ""
-        konto_groups = df.loc[has_konto & (df["_abs"] > 0)].groupby("konto_soll")["_abs"]
-        konto_stats = konto_groups.agg(["mean", "std", "count"])
-        konto_stats = konto_stats[konto_stats["count"] >= 5]
+
+        konto_stats = (
+            df.loc[has_konto & (df["_abs"] > 0)]
+            .groupby("konto_soll")["_abs"]
+            .agg(konto_mean="mean", konto_std="std", konto_count="count")
+        )
+        konto_stats = konto_stats[
+            (konto_stats["konto_count"] >= 5) & (konto_stats["konto_std"] > 0)
+        ].copy()
+        konto_stats["threshold"] = konto_stats["konto_mean"] + 3 * konto_stats["konto_std"]
 
         c = 0
-        for konto, stats in konto_stats.iterrows():
-            if stats["std"] > 0:
-                threshold = stats["mean"] + 3 * stats["std"]
-                konto_mask = (df["konto_soll"] == konto) & (df["_abs"] > threshold)
-                for idx in df.index[konto_mask]:
-                    self._flag(idx, "KONTO_BETRAG_ANOMALIE")
-                    c += 1
+        if not konto_stats.empty:
+            df_tmp = df.join(
+                konto_stats["threshold"].rename("_konto_thresh"), on="konto_soll"
+            )
+            mask = (
+                has_konto
+                & (df["_abs"] > 0)
+                & (df["_abs"] > df_tmp["_konto_thresh"].fillna(float("inf")))
+            )
+            df.loc[mask, "flag_KONTO_BETRAG_ANOMALIE"] = True
+            c = int(mask.sum())
         self.flag_counts["KONTO_BETRAG_ANOMALIE"] = c
-        self._log(f"[19/{NUM_TESTS}] KONTO_BETRAG_ANOMALIE: {c}")
+        self._log(f"[08/{NUM_TESTS}] KONTO_BETRAG_ANOMALIE: {c}")
 
-    def _t19_text_kreditor_mismatch(self):
-        """Same booking text used with ≥3 different creditors.
+    def _t22_velocity_anomalie(self) -> None:
+        """Kreditor mit >3× durchschnittlichen Monatsbuchungen — vektorisierter Join."""
+        df            = self.df
+        has_kred_date = (
+            df["kreditor"].astype(str).str.strip() != ""
+        ) & df["_datum"].notna()
+        subset = df.loc[has_kred_date].copy()
 
-        Filters:
-        - Texts shorter than TEXT_MISMATCH_MIN_LEN are ignored
-        - Known stopwords (generic terms like 'Rechnung', 'Miete')
-          are excluded"""
-        df = self.df
-        has_both = (df["buchungstext"].astype(str).str.strip() != "") & \
-                   (df["kreditor"].astype(str).str.strip() != "")
-        subset = df.loc[has_both, ["buchungstext", "kreditor"]].copy()
-        if subset.empty:
-            self.flag_counts["TEXT_KREDITOR_MISMATCH"] = 0
-            self._log(f"[20/{NUM_TESTS}] TEXT_KREDITOR_MISMATCH: 0")
-            return
-        subset["_text_norm"] = subset["buchungstext"].astype(str).str.lower().str.strip()
-
-        # Filter: min length + stopwords
-        len_ok = subset["_text_norm"].str.len() >= TEXT_MISMATCH_MIN_LEN
-        not_stop = ~subset["_text_norm"].isin(TEXT_STOPWORDS)
-        subset = subset.loc[len_ok & not_stop]
-
-        skipped = int((~len_ok).sum()) + int((~not_stop).sum())
-
-        text_kreditors = subset.groupby("_text_norm")["kreditor"].nunique()
-        suspicious_texts = set(text_kreditors[text_kreditors >= 3].index)
-
-        c = 0
-        if suspicious_texts:
-            for i, row in df.loc[has_both].iterrows():
-                txt = str(row["buchungstext"]).lower().strip()
-                if txt in suspicious_texts:
-                    self._flag(i, "TEXT_KREDITOR_MISMATCH")
-                    c += 1
-        self.flag_counts["TEXT_KREDITOR_MISMATCH"] = c
-        self._log(f"[20/{NUM_TESTS}] TEXT_KREDITOR_MISMATCH: {c}  "
-                  f"(Stopwords/kurze Texte übersprungen: {skipped})")
-
-    def _t20_fuzzy_kreditor(self):
-        """Fuzzy matching on creditor names with RapidFuzz.
-
-        STAMMDATEN-LEVEL: Results are reported as a separate table
-        (name_a, name_b, similarity, match_type) — NOT as per-booking
-        flags, to avoid inflating the suspicious-bookings count.
-
-        Strategy:
-        1. Normalise (lowercase, Umlaute→ASCII, strip Rechtsformen)
-        2. Group exact normalisation duplicates
-        3. Jaro-Winkler (≥0.85) + Token Sort Ratio (≥85) on remaining"""
-        df = self.df
-        unique_kreds = df.loc[df["kreditor"].astype(str).str.strip() != "", "kreditor"].unique()
-        matches_out: list[dict] = []
-
-        if len(unique_kreds) < 2:
-            self.stammdaten_report["fuzzy_kreditor_matches"] = []
-            self._log(f"[21/{NUM_TESTS}] FUZZY_KREDITOR (Stammdaten): 0  (zu wenig Kreditoren)")
+        if subset.empty or len(subset) < 10:
+            self.flag_counts["VELOCITY_ANOMALIE"] = 0
+            self._log(f"[09/{NUM_TESTS}] VELOCITY_ANOMALIE: 0  (zu wenig Daten)")
             return
 
-        # Build normalised lookup
-        normed_map = {}
-        for k in unique_kreds:
-            normed_map[k] = _norm_vendor(k)
+        subset["_ym"] = subset["_datum"].dt.to_period("M").astype(str)
 
-        # Group by normalised form
-        norm_to_originals: dict[str, list] = {}
-        for orig, norm in normed_map.items():
-            norm_to_originals.setdefault(norm, []).append(orig)
+        kred_month = (
+            subset.groupby(["kreditor", "_ym"]).size().reset_index(name="cnt")
+        )
+        kred_stats = (
+            kred_month.groupby("kreditor")["cnt"]
+            .agg(km_mean="mean", km_std="std", n_months="count")
+            .reset_index()
+        )
+        kred_stats = kred_stats[kred_stats["n_months"] >= 3].copy()
+        kred_stats["km_std"] = kred_stats["km_std"].fillna(kred_stats["km_mean"])
+        kred_stats["threshold"] = (kred_stats["km_mean"] * 3).combine(
+            kred_stats["km_mean"] + 2 * kred_stats["km_std"], max
+        )
 
-        # Exact normalisation matches → Stammdaten report
-        for norm, origs in norm_to_originals.items():
-            if len(origs) >= 2:
-                for a_idx in range(len(origs)):
-                    for b_idx in range(a_idx + 1, len(origs)):
-                        matches_out.append({
-                            "name_a": origs[a_idx],
-                            "name_b": origs[b_idx],
-                            "similarity": 100.0,
-                            "match_type": "Norm-Duplikat",
-                        })
-                self._log(f"    Norm-Duplikat: {origs}")
+        spikes = (
+            kred_month
+            .merge(kred_stats[["kreditor", "threshold"]], on="kreditor", how="inner")
+            .query("cnt >= threshold")
+        )
+        if not spikes.empty:
+            spike_set = set(zip(spikes["kreditor"], spikes["_ym"]))
+            self._log(f"    Velocity-Spikes: {spike_set}")
+            subset["_key"]  = list(zip(subset["kreditor"], subset["_ym"]))
+            flagged_sub     = subset[subset["_key"].isin(spike_set)]
+            df.loc[flagged_sub.index, "flag_VELOCITY_ANOMALIE"] = True
 
-        # Fuzzy on unique normalised names
-        unique_normed = list(norm_to_originals.keys())
-        if len(unique_normed) >= 2 and len(unique_normed) <= 10000:
-            seen: list[str] = []
-            for norm in unique_normed:
-                if seen:
-                    # Jaro-Winkler similarity (0-1 scale, cutoff 0.85)
-                    jw_match = rf_process.extractOne(
-                        norm, seen,
-                        scorer=JaroWinkler.similarity,
-                        score_cutoff=0.85,
-                    )
-                    # Token Sort Ratio (handles word order)
-                    ts_match = rf_process.extractOne(
-                        norm, seen,
-                        scorer=fuzz.token_sort_ratio,
-                        score_cutoff=85,
-                    )
+        c = int(df["flag_VELOCITY_ANOMALIE"].sum())
+        self.flag_counts["VELOCITY_ANOMALIE"] = c
+        self._log(f"[09/{NUM_TESTS}] VELOCITY_ANOMALIE: {c}")
 
-                    found: dict[str, tuple[float, str]] = {}
-                    if jw_match:
-                        found[jw_match[0]] = (jw_match[1] * 100, "Jaro-Winkler")
-                    if ts_match:
-                        matched_norm_ts = ts_match[0]
-                        if matched_norm_ts in found:
-                            found[matched_norm_ts] = (
-                                max(found[matched_norm_ts][0], ts_match[1]),
-                                "Jaro-Winkler+TokenSort",
-                            )
-                        else:
-                            found[matched_norm_ts] = (ts_match[1], "TokenSort")
-
-                    for matched_norm, (sim, mtype) in found.items():
-                        if matched_norm != norm:
-                            group_a = norm_to_originals.get(norm, [])
-                            group_b = norm_to_originals.get(matched_norm, [])
-                            for na in group_a:
-                                for nb in group_b:
-                                    matches_out.append({
-                                        "name_a": na,
-                                        "name_b": nb,
-                                        "similarity": round(sim, 1),
-                                        "match_type": mtype,
-                                    })
-                            self._log(f"    Fuzzy ({mtype}, {sim:.1f}%): {group_a} ↔ {group_b}")
-
-                seen.append(norm)
-
-        self.stammdaten_report["fuzzy_kreditor_matches"] = matches_out
-        self._log(f"[21/{NUM_TESTS}] FUZZY_KREDITOR (Stammdaten): {len(matches_out)} Paare")
-
-    def _t21_leerer_buchungstext(self):
-        """Empty or generic booking text (ISA 240 compliance)."""
+    def _t21_leerer_buchungstext(self) -> None:
+        """Leerer oder generischer Buchungstext — vollständig vektorisiert."""
         df = self.df
         generic_patterns = {
             "diverse", "verschiedenes", "sonstiges", "test",
             "korrektur", "umbuchung", "xxx", "---", "...", "k.a.",
             "keine angabe", "n/a", "na", "tbd", "todo",
         }
-        c = 0
-        for i, row in df.iterrows():
-            txt = str(row["buchungstext"]).strip()
-            if not txt:
-                self._flag(i, "LEERER_BUCHUNGSTEXT")
-                c += 1
-            elif txt.lower() in generic_patterns or len(txt) <= 2:
-                self._flag(i, "LEERER_BUCHUNGSTEXT")
-                c += 1
+        txt  = df["buchungstext"].astype(str).str.strip()
+        mask = (txt == "") | (txt.str.lower().isin(generic_patterns)) | (txt.str.len() <= 2)
+        df.loc[mask, "flag_LEERER_BUCHUNGSTEXT"] = True
+        c = int(mask.sum())
         self.flag_counts["LEERER_BUCHUNGSTEXT"] = c
-        self._log(f"[22/{NUM_TESTS}] LEERER_BUCHUNGSTEXT: {c}")
+        self._log(f"[10/{NUM_TESTS}] LEERER_BUCHUNGSTEXT: {c}")
 
-    def _t22_velocity_anomalie(self):
-        """Velocity check: sudden spike in bookings per creditor per month.
+    # ── Phase-2-Tests ─────────────────────────────────────────────────────────
 
-        Flags all bookings in months where a creditor has >3× their average."""
+    def _t23_rechnungsdatum_periode(self) -> None:
+        """Rechnungsdatum in anderer Periode als Buchungsdatum — vektorisiert.
+
+        Nur aktiv wenn die Spalte 'rechnungsdatum' befüllt ist."""
         df = self.df
-        has_kred_date = (df["kreditor"].astype(str).str.strip() != "") & df["_datum"].notna()
-        subset = df.loc[has_kred_date].copy()
-        if subset.empty or len(subset) < 10:
-            self.flag_counts["VELOCITY_ANOMALIE"] = 0
-            self._log(f"[23/{NUM_TESTS}] VELOCITY_ANOMALIE: 0  (zu wenig Daten)")
+        rdatum = parse_date_series(df["rechnungsdatum"])
+        has_both = df["_datum"].notna() & rdatum.notna()
+        c = 0
+        if has_both.any():
+            buch_period = df.loc[has_both, "_datum"].dt.to_period("M")
+            rech_period = rdatum.loc[has_both].dt.to_period("M")
+            mask_inner  = rech_period != buch_period
+            flagged_idx = buch_period.index[mask_inner]
+            df.loc[flagged_idx, "flag_RECHNUNGSDATUM_PERIODE"] = True
+            c = len(flagged_idx)
+        self.flag_counts["RECHNUNGSDATUM_PERIODE"] = c
+        self._log(f"[11/{NUM_TESTS}] RECHNUNGSDATUM_PERIODE: {c}")
+
+    def _t24_buchungstext_periode(self) -> None:
+        """Periodenangabe im Buchungstext stimmt nicht mit Buchungsdatum überein.
+
+        Erkennt Muster wie '01/2024', '1.2024' im Text — vektorisiert."""
+        df       = self.df
+        has_date = df["_datum"].notna()
+        c        = 0
+        if has_date.any():
+            txt = df["buchungstext"].astype(str)
+            # Extrahiere MM/YYYY oder MM.YYYY aus Text (z.B. "Rechnung 01/2024")
+            extracted = txt.str.extract(r'\b(\d{1,2})[/.](\d{4})\b', expand=True)
+            ext_month = pd.to_numeric(extracted[0], errors="coerce")
+            ext_year  = pd.to_numeric(extracted[1], errors="coerce")
+            has_period = ext_month.notna() & ext_year.notna() & ext_month.between(1, 12)
+
+            active = has_date & has_period
+            if active.any():
+                buch_month = df["_datum"].dt.month
+                buch_year  = df["_datum"].dt.year
+                mismatch   = (ext_month != buch_month) | (ext_year != buch_year)
+                mask       = active & mismatch
+                df.loc[mask, "flag_BUCHUNGSTEXT_PERIODE"] = True
+                c = int(mask.sum())
+        self.flag_counts["BUCHUNGSTEXT_PERIODE"] = c
+        self._log(f"[12/{NUM_TESTS}] BUCHUNGSTEXT_PERIODE: {c}")
+
+    def _t25_monats_entwicklung(self) -> None:
+        """Ungewöhnliche Monatsveränderung auf Aufwands-/Ertragskonten.
+
+        Filtert GuV-Konten (40000–79999), berechnet monatliche Summen je Konto
+        und flaggt Buchungen in Ausreißer-Monaten (|Z| > 2.5) — vektorisiert."""
+        df            = self.df
+        has_konto_date = df["_datum"].notna() & (df["_abs"] > 0)
+        subset        = df.loc[has_konto_date].copy()
+        c             = 0
+
+        if len(subset) < 10:
+            self.flag_counts["MONATS_ENTWICKLUNG"] = 0
+            self._log(f"[13/{NUM_TESTS}] MONATS_ENTWICKLUNG: 0  (zu wenig Daten)")
             return
 
-        subset["_yearmonth"] = subset["_datum"].apply(
-            lambda d: f"{d.year}-{d.month:02d}" if d else None
+        # GuV-Konten aus konto_soll filtern (40000–79999)
+        konto_num = pd.to_numeric(
+            subset["konto_soll"].astype(str).str.extract(r"(\d+)", expand=False),
+            errors="coerce",
         )
+        pnl_mask = (konto_num >= 40000) & (konto_num <= 79999)
+        pnl      = subset.loc[pnl_mask].copy()
 
-        kred_month = subset.groupby(["kreditor", "_yearmonth"]).size().reset_index(name="count")
-        kred_avg = kred_month.groupby("kreditor")["count"].agg(["mean", "std", "count"]).rename(
-            columns={"count": "n_months"}
+        if len(pnl) < 10:
+            self.flag_counts["MONATS_ENTWICKLUNG"] = 0
+            self._log(f"[13/{NUM_TESTS}] MONATS_ENTWICKLUNG: 0  (zu wenig GuV-Buchungen)")
+            return
+
+        pnl["_ym"] = pnl["_datum"].dt.to_period("M").astype(str)
+
+        # Monatssummen je Konto
+        monthly = (
+            pnl.groupby(["konto_soll", "_ym"])["_abs"]
+            .sum()
+            .reset_index(name="monatssumme")
         )
-        kred_avg = kred_avg[kred_avg["n_months"] >= 3]
+        konto_stats = (
+            monthly.groupby("konto_soll")["monatssumme"]
+            .agg(ks_mean="mean", ks_std="std", ks_count="count")
+            .reset_index()
+        )
+        konto_stats = konto_stats[
+            (konto_stats["ks_count"] >= 3) & (konto_stats["ks_std"] > 0)
+        ]
 
-        flagged_indices = set()
-        for kred, stats in kred_avg.iterrows():
-            avg = stats["mean"]
-            std = stats["std"] if stats["std"] > 0 else avg
-            threshold = max(avg * 3, avg + 2 * std)
-            kred_data = kred_month[kred_month["kreditor"] == kred]
-            spike_months = kred_data.loc[kred_data["count"] >= threshold, "_yearmonth"].tolist()
-            if spike_months:
-                self._log(f"    Velocity {kred}: Spikes in {spike_months} "
-                          f"(Ø={avg:.1f}, Schwelle={threshold:.1f})")
-                for ym in spike_months:
-                    mask = has_kred_date & (df["kreditor"] == kred)
-                    for idx in df.index[mask]:
-                        d = df.at[idx, "_datum"]
-                        if d and f"{d.year}-{d.month:02d}" == ym:
-                            self._flag(idx, "VELOCITY_ANOMALIE")
-                            flagged_indices.add(idx)
+        if konto_stats.empty:
+            self.flag_counts["MONATS_ENTWICKLUNG"] = 0
+            self._log(f"[13/{NUM_TESTS}] MONATS_ENTWICKLUNG: 0")
+            return
 
-        c = len(flagged_indices)
-        self.flag_counts["VELOCITY_ANOMALIE"] = c
-        self._log(f"[23/{NUM_TESTS}] VELOCITY_ANOMALIE: {c}")
+        with_stats = monthly.merge(konto_stats[["konto_soll", "ks_mean", "ks_std"]], on="konto_soll")
+        with_stats["zscore"] = (
+            (with_stats["monatssumme"] - with_stats["ks_mean"]) / with_stats["ks_std"]
+        )
+        outliers   = with_stats[with_stats["zscore"].abs() > 2.5]
+        spike_set  = set(zip(outliers["konto_soll"], outliers["_ym"]))
 
-    # ── run all ──────────────────────────────────────────────
+        if spike_set:
+            self._log(f"    Monats-Ausreißer: {len(spike_set)} (Konto, Monat)-Paare")
+            pnl["_key"]    = list(zip(pnl["konto_soll"], pnl["_ym"]))
+            flagged_sub    = pnl[pnl["_key"].isin(spike_set)]
+            df.loc[flagged_sub.index, "flag_MONATS_ENTWICKLUNG"] = True
+            c = int(df["flag_MONATS_ENTWICKLUNG"].sum())
+
+        self.flag_counts["MONATS_ENTWICKLUNG"] = c
+        self._log(f"[13/{NUM_TESTS}] MONATS_ENTWICKLUNG: {c}")
+
+    def _t26_fehlende_monatsbuchung(self) -> None:
+        """Regelmäßige Konten mit fehlendem Monat — Nachbarschafts-Flag.
+
+        Für Konten die in ≥60% aller Monate buchen:
+        Fehlt ein Monat → Buchungen des Vor- / Nachmonats werden flaggt."""
+        df            = self.df
+        has_konto_date = (
+            df["_datum"].notna()
+            & (df["konto_soll"].astype(str).str.strip() != "")
+        )
+        subset = df.loc[has_konto_date].copy()
+        c      = 0
+
+        if len(subset) < 10:
+            self.flag_counts["FEHLENDE_MONATSBUCHUNG"] = 0
+            self._log(f"[14/{NUM_TESTS}] FEHLENDE_MONATSBUCHUNG: 0  (zu wenig Daten)")
+            return
+
+        subset["_ym"] = subset["_datum"].dt.to_period("M")
+        all_periods   = sorted(subset["_ym"].unique())
+        if len(all_periods) < 3:
+            self.flag_counts["FEHLENDE_MONATSBUCHUNG"] = 0
+            self._log(f"[14/{NUM_TESTS}] FEHLENDE_MONATSBUCHUNG: 0  (zu wenig Monate)")
+            return
+
+        # Konten die in ≥60% aller Monate buchen
+        konto_month_cnt = subset.groupby("konto_soll")["_ym"].nunique()
+        min_active      = max(3, len(all_periods) * 0.6)
+        regular         = konto_month_cnt[konto_month_cnt >= min_active].index
+
+        if regular.empty:
+            self.flag_counts["FEHLENDE_MONATSBUCHUNG"] = 0
+            self._log(f"[14/{NUM_TESTS}] FEHLENDE_MONATSBUCHUNG: 0  (keine regulären Konten)")
+            return
+
+        # Nachbarschafts-Index über die VOLLE Zeitspanne — nur so werden echte Lücken erkannt
+        full_range = list(pd.period_range(all_periods[0], all_periods[-1], freq="M"))
+        prev_of = {p: full_range[i - 1] for i, p in enumerate(full_range) if i > 0}
+        next_of = {p: full_range[i + 1] for i, p in enumerate(full_range[:-1])}
+
+        flagged: set[int] = set()
+        for konto in regular:
+            konto_data  = subset[subset["konto_soll"] == konto]
+            booked      = set(konto_data["_ym"])
+            idx_by_ym   = konto_data.groupby("_ym").groups  # {period: [idx, ...]}
+
+            for period in full_range:
+                if period not in booked:
+                    for adj in (prev_of.get(period), next_of.get(period)):
+                        if adj and adj in idx_by_ym:
+                            flagged.update(idx_by_ym[adj])
+
+        if flagged:
+            df.loc[list(flagged), "flag_FEHLENDE_MONATSBUCHUNG"] = True
+            c = len(flagged)
+
+        self.flag_counts["FEHLENDE_MONATSBUCHUNG"] = c
+        self._log(f"[14/{NUM_TESTS}] FEHLENDE_MONATSBUCHUNG: {c}")
+
+    # ── run all ──────────────────────────────────────────────────────────────
+
     def run(self) -> dict:
         self._stats()
         self._t01_zscore()
         self._t02_iqr()
-        self._t03_seltene_kontierung()
-        self._t04_zeitlich()
-        self._t05_ausserhalb_geschaeftszeit()
         self._t06_near_duplicate()
-        self._t07_benford()
-        self._t08_runder_betrag()
-        self._t09_erfasser()
-        self._t10_split()
-        self._t11_schwellenwert_cluster()
-        self._t12_beleg_luecke()
         self._t13_doppelte_belegnummer()
         self._t14_beleg_kreditor_duplikat()
         self._t15_storno()
         self._t16_neuer_kreditor_hoch()
-        self._t17_soll_gleich_haben()
         self._t18_konto_betrag_anomalie()
-        self._t19_text_kreditor_mismatch()
-        self._t20_fuzzy_kreditor()
-        self._t21_leerer_buchungstext()
         self._t22_velocity_anomalie()
+        self._t21_leerer_buchungstext()
+        self._t23_rechnungsdatum_periode()
+        self._t24_buchungstext_periode()
+        self._t25_monats_entwicklung()
+        self._t26_fehlende_monatsbuchung()
+        self._compute_scores()
         return self._export()
 
     def _export(self) -> dict:
         df = self.df
-        mask = df["_score"] >= OUTPUT_THRESHOLD
-        for i, row in df.iterrows():
-            if any(f in CRITICAL_FLAGS for f in row["_flags"]):
-                mask.at[i] = True
 
-        verdaechtig = df[mask].sort_values("_score", ascending=False).head(MAX_OUTPUT_ROWS)
+        # Kritische-Flag-Maske vollständig vektorisiert
+        crit_cols    = [f"flag_{n}" for n in CRITICAL_FLAGS if f"flag_{n}" in df.columns]
+        critical_mask = (
+            df[crit_cols].any(axis=1) if crit_cols
+            else pd.Series(False, index=df.index)
+        )
+        output_mask  = (df["_score"] >= OUTPUT_THRESHOLD) | critical_mask
+        verdaechtig  = df[output_mask].sort_values("_score", ascending=False).head(MAX_OUTPUT_ROWS)
 
-        out_cols = ["datum", "konto_soll", "konto_haben", "betrag",
-                    "buchungstext", "belegnummer", "kostenstelle",
-                    "kreditor", "erfasser"]
-        rows = []
+        # Flag-Strings vektorisiert aufbauen (nur über gefilterte Teilmenge)
+        flag_str_series = verdaechtig.apply(
+            lambda row: "|".join(n for n in _FLAG_NAMES if row.get(f"flag_{n}", False)),
+            axis=1,
+        )
+
+        out_cols = [
+            "datum", "konto_soll", "konto_haben", "betrag",
+            "buchungstext", "belegnummer", "kostenstelle", "kreditor", "erfasser",
+        ]
+        rows: list[dict] = []
         for i, row in verdaechtig.iterrows():
             r = {c: str(row.get(c, "")) for c in out_cols}
-            r["betrag"] = row["_betrag"]
+            r["betrag"]        = row["_betrag"]
             r["anomaly_score"] = round(row["_score"], 2)
-            r["anomaly_flags"] = "|".join(row["_flags"])
-            if row["_datum"]:
+            r["anomaly_flags"] = flag_str_series.at[i]
+            if pd.notna(row["_datum"]):
                 r["datum"] = row["_datum"].strftime("%Y-%m-%d")
             rows.append(r)
 
-        total = len(df)
-        n_verd = int(mask.sum())
-        avg_score = round(float(df["_score"].mean()), 2) if total > 0 else 0.0
-        total_flags = int(df["_flags"].apply(len).sum()) if total > 0 else 0
-        pct = n_verd / total * 100 if total > 0 else 0.0
+        total       = len(df)
+        n_verd      = int(output_mask.sum())
+        avg_score   = round(float(df["_score"].mean()), 2) if total > 0 else 0.0
+        total_flags = int(sum(int(df[f"flag_{n}"].sum()) for n in _FLAG_NAMES))
+        pct         = n_verd / total * 100 if total > 0 else 0.0
 
         top_flags = sorted(
             ((k, v) for k, v in self.flag_counts.items() if v > 0),
             key=lambda x: -x[1],
         )
-
         summary_lines = [
             f"ERGEBNIS: {n_verd} von {total} verdächtig ({pct:.1f}%)",
             f"Flags gesamt: {total_flags}, Ø Score: {avg_score}",
@@ -855,7 +596,6 @@ class AnomalyEngine:
             summary_lines.append(
                 f"Höchster Score: {rows[0]['anomaly_score']} ({rows[0]['belegnummer']})"
             )
-
         for line in summary_lines:
             self._log(line)
 
@@ -869,6 +609,6 @@ class AnomalyEngine:
                 "flag_counts":  self.flag_counts,
             },
             "verdaechtige_buchungen": rows,
-            "stammdaten_report": self.stammdaten_report,
-            "logs": self.logs,
+            "stammdaten_report":      self.stammdaten_report,
+            "logs":                   self.logs,
         }

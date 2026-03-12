@@ -62,24 +62,7 @@ def _norm(name: str) -> str:
 
 
 def map_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename columns to canonical names using COLUMN_ALIASES.
-
-    Performance-Hinweis für engine.py
-    ----------------------------------
-    Nach dem Umbenennen der Spalten können die vektorisierten Parser direkt
-    auf den kanonischen Spalten aufgerufen werden, bevor .apply() benutzt wird:
-
-        df = map_columns(df)
-        # Statt: df["_betrag"] = df["betrag"].apply(parse_german_number)
-        # Besser (vektorisiert, ~50-100x schneller bei großen DataFrames):
-        #   from modules.parser import parse_german_number_series
-        #   df["_betrag"] = parse_german_number_series(df["betrag"]).fillna(0.0)
-        #
-        # Statt: df["_datum"] = df["datum"].apply(parse_date)
-        # Besser (vektorisiert):
-        #   from modules.parser import parse_date_series
-        #   df["_datum"] = parse_date_series(df["datum"])
-    """
+    """Rename columns to canonical names using COLUMN_ALIASES."""
     normed = {_norm(c): c for c in df.columns}
     rename = {}
     for canon, aliases in COLUMN_ALIASES.items():
@@ -101,14 +84,6 @@ def map_columns(df: pd.DataFrame) -> pd.DataFrame:
 # ── Number parsing ──────────────────────────────────────────
 def parse_german_number(val) -> float:
     """Parse a German-style number string to float.
-
-    Handles:
-      - Currency symbols (€, $, £)
-      - Mixed dot/comma separators (1.234,56 → 1234.56)
-      - Ambiguous: if comma-separated with ≤2 decimals → treated as decimal
-        e.g. "1,23" → 1.23 (not 123). This is a known ambiguity for values
-        like "1,23" which could mean 1.23€ or 123 units.
-        For Buchungsdaten this is usually correct (currency amounts).
 
     Note: scalar version kept for backwards compatibility with tests.
     For bulk processing use parse_german_number_series() instead.
@@ -138,43 +113,21 @@ def parse_german_number(val) -> float:
 def parse_german_number_series(series: pd.Series) -> pd.Series:
     """Vektorisiertes Parsing einer kompletten Betrag-Spalte.
 
-    Verarbeitet die gesamte Spalte auf einmal mit pandas-internen
-    Vektoroperationen statt pro-Zeile Python-Funktionsaufrufen.
     Bei 500k Zeilen ca. 50-100x schneller als .apply(parse_german_number).
-
     Rückgabe: pd.Series[float] mit NaN für nicht-parseable Werte.
-    In engine.py mit .fillna(0.0) nachbehandeln:
-        df["_betrag"] = parse_german_number_series(df["betrag"]).fillna(0.0)
-
-    Unterstützte Formate:
-      - Deutsches Format:  1.234,56  /  1234,56  /  -500,00
-      - Englisches Format: 1,234.56  /  1234.56
-      - Tausender-Komma:   1,234    (3+ Stellen nach Komma → Tausender)
-      - Währungssymbole:   € $ £
-      - Leerzeichen als Tausender: 1 234,56
     """
     s = series.astype(str).str.strip()
-
-    # Währungssymbole und Leerzeichen entfernen
     s = s.str.replace(r'[€$£\s]', '', regex=True)
-
-    # Deutsches Format erkennen: endet auf ,XX oder ,X (Komma als Dezimalzeichen)
     german_mask = s.str.match(r'^-?[\d\.]*,\d{1,2}$', na=False)
-
-    # Deutsches Format: Punkte als Tausendertrennzeichen entfernen, Komma → Punkt
     s_german = (
         s.str.replace(r'\.(?=\d{3})', '', regex=True)
          .str.replace(',', '.', regex=False)
     )
-
-    # Englisches Format: Kommas als Tausendertrennzeichen entfernen
     s_english = s.str.replace(r',(?=\d{3})', '', regex=True)
-
-    result = pd.to_numeric(
+    return pd.to_numeric(
         s_german.where(german_mask, s_english),
         errors='coerce'
     )
-    return result
 
 
 # ── Date parsing ────────────────────────────────────────────
@@ -187,7 +140,6 @@ def parse_date(val) -> Optional[datetime]:
     if pd.isna(val):
         return None
     s = str(val).strip()
-    # ISO: 2024-01-15 or 2024-01-15T10:30:00
     m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?", s)
     if m:
         try:
@@ -197,7 +149,6 @@ def parse_date(val) -> Optional[datetime]:
             )
         except (ValueError, TypeError):
             pass
-    # German: 15.01.2024
     m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?", s)
     if m:
         try:
@@ -207,7 +158,6 @@ def parse_date(val) -> Optional[datetime]:
             )
         except (ValueError, TypeError):
             pass
-    # German short: 15.01.24
     m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2})$", s)
     if m:
         try:
@@ -224,37 +174,20 @@ def parse_date(val) -> Optional[datetime]:
 def parse_date_series(series: pd.Series) -> pd.Series:
     """Vektorisiertes Parsing einer kompletten Datum-Spalte mit Format-Fallbacks.
 
-    Verarbeitet die gesamte Spalte auf einmal. Probiert Formate in absteigender
-    Häufigkeit — sobald ein Wert geparst ist, wird er nicht mehr erneut versucht.
     Bei 500k Zeilen ca. 50-100x schneller als .apply(parse_date).
-
     Rückgabe: pd.Series[datetime64] mit pd.NaT für nicht-parseable Werte.
-    In engine.py direkt verwenden:
-        df["_datum"] = parse_date_series(df["datum"])
-
-    Unterstützte Formate (in Reihenfolge der Häufigkeit):
-      - ISO kurz:          2024-01-15
-      - Deutsch lang:      15.01.2024
-      - Deutsch kurz:      15.01.24
-      - ISO mit Zeit:      2024-01-15T14:30:00
-      - Deutsch mit Zeit:  15.01.2024 14:30:00
-      - Deutsch mit Zeit:  15.01.2024 14:30
     """
     s = series.astype(str).str.strip()
-
-    # Formate in Reihenfolge der Häufigkeit
     formats = [
-        "%Y-%m-%d",           # ISO: 2024-01-15
-        "%d.%m.%Y",           # Deutsch lang: 15.01.2024
-        "%d.%m.%y",           # Deutsch kurz: 15.01.24
-        "%Y-%m-%dT%H:%M:%S",  # ISO mit Zeit
-        "%d.%m.%Y %H:%M:%S",  # Deutsch mit Zeit (mit Sekunden)
-        "%d.%m.%Y %H:%M",     # Deutsch mit Zeit (ohne Sekunden)
+        "%Y-%m-%d",
+        "%d.%m.%Y",
+        "%d.%m.%y",
+        "%Y-%m-%dT%H:%M:%S",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
     ]
-
     result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
     remaining = pd.Series(True, index=series.index)
-
     for fmt in formats:
         if not remaining.any():
             break
@@ -262,38 +195,18 @@ def parse_date_series(series: pd.Series) -> pd.Series:
         newly_parsed = parsed.notna()
         if newly_parsed.any():
             result[remaining] = result[remaining].where(~newly_parsed, parsed[newly_parsed])
-            # Nach jeder Runde nur noch nicht geparste Zeilen weiterverarbeiten
             remaining = remaining & result.isna()
-
     return result
 
 
 # ── File ingestion ──────────────────────────────────────────
 def read_upload(filepath: str) -> pd.DataFrame:
-    """Read CSV / XLS / XLSX with auto-detection.
-
-    Performance-Hinweis für engine.py
-    ----------------------------------
-    Nach read_upload() und map_columns() sollten in engine._prepare() die
-    vektorisierten Parser verwendet werden (statt .apply()):
-
-        from modules.parser import parse_german_number_series, parse_date_series
-
-        # Betrag-Spalte vektorisiert parsen (NaN → 0.0 per fillna):
-        df["_betrag"] = parse_german_number_series(df["betrag"]).fillna(0.0)
-
-        # Datum-Spalte vektorisiert parsen (NaT bleibt NaT):
-        df["_datum"] = parse_date_series(df["datum"])
-
-    Diese Umstellung reduziert die Parse-Zeit bei 500k Zeilen von
-    mehreren Minuten (500k Python-Callbacks) auf Sekunden (vektorisiert).
-    """
+    """Read CSV / XLS / XLSX with auto-detection."""
     name = filepath.lower()
     if name.endswith(".xlsx"):
         return pd.read_excel(filepath, engine="openpyxl", dtype=str)
     if name.endswith(".xls"):
         return pd.read_excel(filepath, engine="xlrd", dtype=str)
-    # CSV — auto-detect separator
     with open(filepath, "r", encoding="utf-8-sig", errors="replace") as f:
         text = f.read()
     for sep in [";", ",", "\t"]:
