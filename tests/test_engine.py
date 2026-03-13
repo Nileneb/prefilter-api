@@ -382,10 +382,10 @@ class TestEngineVelocityAnomalie:
 
 class TestEngineRechnungsdatumPeriode:
     def test_different_period_flagged(self):
-        """Rechnungsdatum >2 Monate abweichend → flaggen."""
+        """Erfassungsdatum >2 Monate vom Belegdatum entfernt → flaggen."""
         df = _make_df(
             datum=["2024-06-15"],
-            rechnungsdatum=["2024-01-10"],  # Januar vs Juni = 5 Monate Differenz
+            erfassungsdatum=["2024-01-10"],  # Januar vs Juni = 5 Monate Differenz
         )
         engine = AnomalyEngine(df)
         engine._stats()
@@ -396,16 +396,16 @@ class TestEngineRechnungsdatumPeriode:
         """Gleicher Monat → nicht flaggen."""
         df = _make_df(
             datum=["2024-03-15"],
-            rechnungsdatum=["2024-03-01"],
+            erfassungsdatum=["2024-03-01"],
         )
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t23_rechnungsdatum_periode()
         assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 0
 
-    def test_missing_rechnungsdatum_not_flagged(self):
-        """Kein Rechnungsdatum vorhanden → nicht flaggen."""
-        df = _make_df(datum=["2024-03-15"])  # rechnungsdatum leer
+    def test_no_erfassungsdatum_not_flagged(self):
+        """Kein Erfassungsdatum und keine Buchungsperiode → nicht flaggen."""
+        df = _make_df(datum=["2024-03-15"])
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t23_rechnungsdatum_periode()
@@ -899,17 +899,17 @@ class TestRechnungsdatumBuchungsperiodeFallback:
         engine._t23_rechnungsdatum_periode()
         assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 1
 
-    def test_rechnungsdatum_takes_priority(self):
-        """Wenn Rechnungsdatum vorhanden, wird Buchungsperiode ignoriert."""
+    def test_erfassungsdatum_takes_priority(self):
+        """Wenn Erfassungsdatum vorhanden, wird Buchungsperiode ignoriert."""
         df = _make_df(
             datum=["2024-03-15"],
-            rechnungsdatum=["2024-03-01"],
+            erfassungsdatum=["2024-03-01"],
             buchungsperiode=["2024-01-02"],
         )
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t23_rechnungsdatum_periode()
-        # Rechnungsdatum gleicher Monat → kein Flag
+        # Erfassungsdatum gleicher Monat → kein Flag (Buchungsperiode ignoriert)
         assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 0
 
     def test_erfassungsdatum_fallback(self):

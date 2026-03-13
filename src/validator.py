@@ -30,7 +30,7 @@ TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
     "LEERER_BUCHUNGSTEXT":    {"required": ["buchungstext"]},
     "VELOCITY_ANOMALIE":      {"required": ["erfasser", "datum"]},
     "RECHNUNGSDATUM_PERIODE": {"required": ["datum"],
-                               "optional": ["rechnungsdatum", "erfassungsdatum", "buchungsperiode"]},
+                               "optional": ["erfassungsdatum", "buchungsperiode"]},
     "BUCHUNGSTEXT_PERIODE":   {"required": ["buchungstext", "datum"]},
     "MONATS_ENTWICKLUNG":     {"required": ["betrag", "datum"]},
     "FEHLENDE_MONATSBUCHUNG": {"required": ["datum"],     "optional": ["konto_soll"]},
@@ -76,8 +76,11 @@ def validate_columns(df: pd.DataFrame) -> ValidationResult:
 
     # Füllgrade aller relevanten Spalten berechnen
     all_cols = set()
+    required_anywhere = set()
     for reqs in TEST_REQUIREMENTS.values():
-        all_cols.update(reqs.get("required", []))
+        req = reqs.get("required", [])
+        all_cols.update(req)
+        required_anywhere.update(req)
         all_cols.update(reqs.get("optional", []))
 
     fill_rates: dict[str, float] = {}
@@ -86,9 +89,9 @@ def validate_columns(df: pd.DataFrame) -> ValidationResult:
         fill_rates[col] = rate
         if rate > 0:
             result.columns_found.append(col)
-        if rate == 0.0:
+        if rate == 0.0 and col in required_anywhere:
             result.columns_empty.append(col)
-        elif rate < 50.0:
+        elif rate < 50.0 and rate > 0:
             result.columns_sparse[col] = rate
 
     # Pro Test: blockiert / degradiert / ok

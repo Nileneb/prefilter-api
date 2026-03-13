@@ -49,7 +49,6 @@ COLUMN_ALIASES = {
     "kreditor":         ["kreditor", "lieferant", "vendor", "supplier", "creditor",
                          "bezeichnung"],
     "erfasser":         ["erfasser", "user", "benutzer", "ersteller", "created_by"],
-    "rechnungsdatum":   ["rechnungsdatum", "invoice_date", "rech_datum", "invoicedate"],
     # ── Diamant-Spalten ──────────────────────────────────────
     "klasse":           ["klasse"],
     "belegart":         ["belegart"],

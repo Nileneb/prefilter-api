@@ -74,33 +74,36 @@ class RechnungsdatumPeriode(AnomalyTest):
     name = "RECHNUNGSDATUM_PERIODE"
     weight = 1.5
     critical = False
-    required_columns = ["_datum", "rechnungsdatum", "erfassungsdatum", "buchungsperiode"]
+    required_columns = ["_datum", "erfassungsdatum", "buchungsperiode"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        # Priorität: rechnungsdatum > erfassungsdatum > buchungsperiode
-        rdatum = parse_date_series(df["rechnungsdatum"])
-        has_both = df["_datum"].notna() & rdatum.notna()
-        source = "rechnungsdatum"
+        # _datum = Belegdatum = Rechnungsdatum (Synonyme)
+        # Vergleich: Belegdatum vs Erfassungsdatum (wann gebucht?)
+        erfdat = None
+        source = None
 
-        # Fallback 1: erfassungsdatum (ErfassungAm) als Proxy
-        if not has_both.any() and "erfassungsdatum" in df.columns:
-            rdatum = parse_date_series(df["erfassungsdatum"])
-            has_both = df["_datum"].notna() & rdatum.notna()
-            source = "erfassungsdatum"
+        # Priorität 1: erfassungsdatum (ErfassungAm)
+        if "erfassungsdatum" in df.columns:
+            erfdat = parse_date_series(df["erfassungsdatum"])
+            has_both = df["_datum"].notna() & erfdat.notna()
+            if has_both.any():
+                source = "erfassungsdatum"
 
-        # Fallback 2: buchungsperiode
-        if not has_both.any() and "buchungsperiode" in df.columns:
-            rdatum = parse_date_series(df["buchungsperiode"])
-            has_both = df["_datum"].notna() & rdatum.notna()
-            source = "buchungsperiode"
+        # Priorität 2: buchungsperiode
+        if source is None and "buchungsperiode" in df.columns:
+            erfdat = parse_date_series(df["buchungsperiode"])
+            has_both = df["_datum"].notna() & erfdat.notna()
+            if has_both.any():
+                source = "buchungsperiode"
 
-        self.log("Datumsquelle", source=source, rows_with_both=int(has_both.sum()))
+        self.log("Datumsquelle", source=source or "keine",
+                 rows_with_both=int(has_both.sum()) if source else 0)
 
-        if not has_both.any():
+        if source is None:
             self.log("Keine vergleichbaren Datumspaare gefunden")
             return 0
         buch_period = df.loc[has_both, "_datum"].dt.to_period("M")
-        rech_period = rdatum.loc[has_both].dt.to_period("M")
+        rech_period = erfdat.loc[has_both].dt.to_period("M")
 
         # Nur flaggen wenn Differenz > 2 Monate (normale Abgrenzung ignorieren)
         diff_months = (
