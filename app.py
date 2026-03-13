@@ -72,6 +72,16 @@ def _ts() -> str:
 # RESULT HELPER
 # ══════════════════════════════════════════════════════════════
 
+def _save_csv(df: pd.DataFrame) -> str | None:
+    """Speichert DataFrame als CSV in /tmp und gibt den Pfad zurück."""
+    if df is None or df.empty:
+        return None
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join("/tmp", f"verdaechtige_buchungen_{ts}.csv")
+    df.to_csv(path, index=False, sep=";", encoding="utf-8-sig")
+    return path
+
+
 def _format_result(result: dict, webhook_url: str) -> tuple[str, pd.DataFrame]:
     """Formatiert das engine.run()-Ergebnis-Dict für die Gradio-Ausgabe."""
     stats    = result["statistics"]
@@ -184,8 +194,8 @@ def analyze_file(
     def log(msg: str) -> None:
         live_log_lines.append(f"[{_ts()}] {msg}")
 
-    def current_state(summary="", table=None):
-        return summary, "\n".join(live_log_lines), table
+    def current_state(summary="", table=None, csv_path=None):
+        return summary, "\n".join(live_log_lines), table, gr.update(value=csv_path, visible=csv_path is not None)
 
     if file is None:
         yield current_state("Bitte eine Datei hochladen.")
@@ -262,7 +272,8 @@ def analyze_file(
         log(f"✅ Fertig! {result['statistics']['total_suspicious']:,} verdächtige Buchungen".replace(",", "."))
 
         summary, display_df = _format_result(result, webhook_url)
-        yield current_state(summary, display_df)
+        csv_path = _save_csv(display_df)
+        yield current_state(summary, display_df, csv_path)
         return
 
     # ── Worker-Modus (Redis + Celery) ─────────────────────────
@@ -346,7 +357,8 @@ def analyze_file(
     log(f"✅ Fertig in {elapsed}s — {result['statistics']['total_suspicious']:,} verdächtige Buchungen".replace(",", "."))
 
     summary, display_df = _format_result(result, webhook_url)
-    yield current_state(summary, display_df)
+    csv_path = _save_csv(display_df)
+    yield current_state(summary, display_df, csv_path)
 
 
 def cancel_analysis():
@@ -453,6 +465,7 @@ with gr.Blocks(
                 interactive=False,
                 wrap=True,
             )
+            export_file = gr.File(label="📥 CSV-Download", visible=False)
         with gr.Tab("📜 Live-Log"):
             logs_output = gr.Textbox(
                 label="Live-Log", lines=25, interactive=False,
@@ -474,7 +487,7 @@ with gr.Blocks(
             prefix_ignore_input,
             *test_checkboxes,
         ],
-        outputs=[summary_output, logs_output, table_output],
+        outputs=[summary_output, logs_output, table_output, export_file],
     )
 
     cancel_btn.click(
