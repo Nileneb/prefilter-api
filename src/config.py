@@ -40,6 +40,10 @@ class AnalysisConfig(BaseModel):
         5, ge=2,
         description="Mindestanzahl identischer Belegnummern-Gruppen für DOPPELTE_BELEGNUMMER (Standard: 5)",
     )
+    doppelte_beleg_prefix_ignore: str = Field(
+        "",
+        description="Komma-getrennte Belegnummer-Präfixe die ignoriert werden (z.B. 'RW, SB')",
+    )
     beleg_kreditor_days: int = Field(
         7, ge=1,
         description="Zeitfenster in Tagen für BELEG_KREDITOR_DUPLIKAT Level 2 (Standard: 7)",
@@ -47,6 +51,10 @@ class AnalysisConfig(BaseModel):
     beleg_kreditor_max_group_size: int = Field(
         20, ge=2,
         description="Max. Gruppengröße für BELEG_KREDITOR_DUPLIKAT Level 2 (Standard: 20)",
+    )
+    beleg_kreditor_regular_pct: float = Field(
+        0.20, ge=0.05, le=0.80,
+        description="Anteil der Datenmonate für reguläre Zahlungsmuster bei BELEG_KREDITOR_DUPLIKAT (Standard: 0.20 = 20%)",
     )
 
     # ── Neuer Kreditor ───────────────────────────────────────
@@ -87,8 +95,8 @@ class AnalysisConfig(BaseModel):
 
     # ── Fehlende Monatsbuchung ───────────────────────────────
     fehlende_buchung_min_quote: float = Field(
-        0.6, ge=0.1, le=1.0,
-        description="Mindestanteil aktiver Monate für FEHLENDE_MONATSBUCHUNG (Standard: 0.6 = 60%)",
+        0.3, ge=0.1, le=1.0,
+        description="Mindestanteil aktiver Monate für FEHLENDE_MONATSBUCHUNG (Standard: 0.3 = 30%)",
     )
 
     # ── Output-Steuerung ─────────────────────────────────────

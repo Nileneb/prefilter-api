@@ -77,7 +77,7 @@ class NearDuplicate(AnomalyTest):
     name = "NEAR_DUPLICATE"
     weight = 2.0
     critical = True
-    required_columns = ["_abs", "_datum", "konto_soll", "konto_haben", "kreditor", "buchungstext"]
+    required_columns = ["_abs", "_datum", "konto_soll", "kreditor", "buchungstext"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         flagged: set[int] = set()
@@ -85,7 +85,12 @@ class NearDuplicate(AnomalyTest):
         max_grp = config.near_duplicate_max_group_size
         reg_months = config.near_duplicate_regular_months
 
-        self.log("Config", window=window, max_grp=max_grp, reg_months=reg_months)
+        # konto_haben optional: nur einbeziehen wenn befüllt
+        kh = df["konto_haben"].astype(str).str.strip() if "konto_haben" in df.columns else pd.Series("", index=df.index)
+        has_konto_haben = (kh != "").any()
+
+        self.log("Config", window=window, max_grp=max_grp, reg_months=reg_months,
+                 konto_haben_verfuegbar=has_konto_haben)
 
         # Nullbeträge ausschließen
         nonzero = df["_abs"] > 0
@@ -105,8 +110,11 @@ class NearDuplicate(AnomalyTest):
         )
 
         # ── MIT Kreditor ──
+        kred_group_cols = ["_abs", "konto_soll", "kreditor"]
+        if has_konto_haben:
+            kred_group_cols.insert(2, "konto_haben")
         regular_kred = _find_regular_keys(
-            df[has_kred], ["_abs", "konto_soll", "konto_haben", "kreditor"],
+            df[has_kred], kred_group_cols,
             reg_months, logger=self.log, label="kred",
         )
 
@@ -117,7 +125,7 @@ class NearDuplicate(AnomalyTest):
 
         if has_kred.any():
             for key, grp in df[has_kred].groupby(
-                ["_abs", "konto_soll", "konto_haben", "kreditor"],
+                kred_group_cols,
                 sort=False, observed=True,
             ):
                 n_groups_kred += 1
@@ -143,8 +151,11 @@ class NearDuplicate(AnomalyTest):
         self.metric("kred_flagged", n_flagged_kred)
 
         # ── OHNE Kreditor ──
+        nokred_group_cols = ["_abs", "konto_soll", "buchungstext"]
+        if has_konto_haben:
+            nokred_group_cols.insert(2, "konto_haben")
         regular_nokred = _find_regular_keys(
-            df[no_kred], ["_abs", "konto_soll", "konto_haben", "buchungstext"],
+            df[no_kred], nokred_group_cols,
             reg_months, logger=self.log, label="no_kred",
         )
 
@@ -155,7 +166,7 @@ class NearDuplicate(AnomalyTest):
 
         if no_kred.any():
             for key, grp in df[no_kred].groupby(
-                ["_abs", "konto_soll", "konto_haben", "buchungstext"],
+                nokred_group_cols,
                 sort=False, observed=True,
             ):
                 n_groups_nokred += 1
@@ -211,9 +222,24 @@ class DoppelteBelegnummer(AnomalyTest):
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         min_count = getattr(config, "doppelte_beleg_min_count", 3)
-        self.log("Config", min_count=min_count)
+        prefix_ignore_raw = getattr(config, "doppelte_beleg_prefix_ignore", "")
+        prefixes = [p.strip().upper() for p in prefix_ignore_raw.split(",") if p.strip()] if prefix_ignore_raw else []
+        self.log("Config", min_count=min_count, prefix_ignore=prefixes)
 
-        has_beleg = df["belegnummer"].astype(str).str.strip() != ""
+        beleg_str = df["belegnummer"].astype(str).str.strip()
+        has_beleg = beleg_str != ""
+
+        # Präfix-Whitelist anwenden
+        if prefixes:
+            beleg_upper = beleg_str.str.upper()
+            prefix_mask = pd.Series(False, index=df.index)
+            for prefix in prefixes:
+                prefix_mask = prefix_mask | beleg_upper.str.startswith(prefix, na=False)
+            n_excluded = int((has_beleg & prefix_mask).sum())
+            self.log("Präfix-Whitelist", excluded=n_excluded, prefixes=prefixes)
+            self.metric("prefix_excluded", n_excluded)
+            has_beleg = has_beleg & ~prefix_mask
+
         n_with_beleg = int(has_beleg.sum())
         self.log("Buchungen mit Belegnummer", count=n_with_beleg)
         self.metric("rows_with_beleg", n_with_beleg)
@@ -263,9 +289,19 @@ class BelegKreditorDuplikat(AnomalyTest):
         self.log("Buchungen mit Beleg+Kreditor", count=int(has_all.sum()))
         self.metric("rows_with_beleg_kred", int(has_all.sum()))
 
+        # ── Dynamisches reg_months basierend auf Datenmonate ──
+        has_datum = df["_datum"].notna()
+        if has_datum.any():
+            n_months_total = df.loc[has_datum, "_datum"].dt.to_period("M").nunique()
+        else:
+            n_months_total = 0
+        reg_months = max(6, int(n_months_total * config.beleg_kreditor_regular_pct))
+        self.log("Reguläre Muster", n_months_total=n_months_total, reg_months=reg_months,
+                 regular_pct=config.beleg_kreditor_regular_pct)
+
         # ── Reguläre Kreditoren ──
         regular_kb = _find_regular_keys(
-            df[has_all], ["kreditor", "_betrag"], 6,
+            df[has_all], ["kreditor", "_betrag"], reg_months,
             logger=self.log, label="beleg_kred_regular",
         )
 

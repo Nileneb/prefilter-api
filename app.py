@@ -84,7 +84,8 @@ def _format_result(result: dict, webhook_url: str) -> tuple[str, pd.DataFrame]:
         f"Analyse abgeschlossen\n\n"
         f"Gesamt: {stats['total_input']} Buchungen\n"
         f"Verdaechtig: {stats['total_suspicious']} ({stats['filter_ratio']})\n"
-        f"Ausgegeben: {stats['total_output']} (Top nach Score)\n"
+        f"Ausgegeben: {stats['total_output']}"
+        f"{' (limitiert auf Top ' + str(stats['total_output']) + ' nach Score)' if stats['total_output'] < stats['total_suspicious'] else ''}\n"
         f"Avg Score: {stats['avg_score']}\n\n"
         f"Buchungs-Flags:\n{flag_str}\n"
     )
@@ -172,6 +173,7 @@ def analyze_file(
     iqr_factor: float,
     near_duplicate_days: int,
     output_threshold: float,
+    prefix_ignore: str,
     *test_toggles,
 ):
     """Generator: yielded (summary, logs, table) bei jedem Schritt."""
@@ -210,6 +212,7 @@ def analyze_file(
         "iqr_factor":          iqr_factor,
         "near_duplicate_days": int(near_duplicate_days),
         "output_threshold":    output_threshold,
+        "doppelte_beleg_prefix_ignore": prefix_ignore.strip() if prefix_ignore else "",
     }
 
     # ── Lokaler Fallback-Modus ────────────────────────────────
@@ -275,6 +278,7 @@ def analyze_file(
         "filename":     os.path.basename(filepath),
     })
     _r.expire(f"job:{job_id}", JOB_TTL)
+    _r.expire(f"job:{job_id}:log", JOB_TTL)
 
     task_args = [job_id, dest, config_dict]
     if enabled_tests != set(ALL_TEST_NAMES):
@@ -287,6 +291,7 @@ def analyze_file(
     yield current_state("Warte auf Worker...")
 
     prev_test = ""
+    log_cursor = 0  # Cursor für Redis-Log-Liste
     while True:
         data = _r.hgetall(f"job:{job_id}")
         if not data:
@@ -296,12 +301,23 @@ def analyze_file(
         status    = data.get("status", "queued")
         test_name = data.get("current_test", "")
 
-        if test_name and test_name != prev_test:
-            log(f"🔬 {test_name}...")
-            prev_test = test_name
+        # Live-Log aus Redis-Liste lesen
+        new_entries = _r.lrange(f"job:{job_id}:log", log_cursor, -1)
+        if new_entries:
+            for entry in new_entries:
+                live_log_lines.append(entry)
+            log_cursor += len(new_entries)
             yield current_state("Analyse läuft...")
 
+        if test_name and test_name != prev_test:
+            prev_test = test_name
+
         if status in ("done", "failed", "cancelled"):
+            # Letzte Log-Einträge abholen
+            final_entries = _r.lrange(f"job:{job_id}:log", log_cursor, -1)
+            if final_entries:
+                for entry in final_entries:
+                    live_log_lines.append(entry)
             break
 
         time.sleep(0.5)
@@ -325,12 +341,6 @@ def analyze_file(
         return
 
     result = json.loads(result_raw)
-
-    # Engine-Logs in Live-Log übernehmen
-    for engine_log in result.get("logs", []):
-        if engine_log.startswith("["):
-            # Test-Ergebnis-Zeilen
-            log(f"📋 {engine_log}")
 
     elapsed = data.get("elapsed_s", "?")
     log(f"✅ Fertig in {elapsed}s — {result['statistics']['total_suspicious']:,} verdächtige Buchungen".replace(",", "."))
@@ -410,6 +420,13 @@ with gr.Blocks(
                 label="Output-Schwellenwert",
                 info="Min. Score für Ausgabe (Standard: 2.0)",
             )
+        with gr.Row():
+            prefix_ignore_input = gr.Textbox(
+                label="Belegnummer-Präfixe ignorieren (kommagetrennt)",
+                placeholder="z.B. RW, SB",
+                value="",
+                info="Belegnummern mit diesen Präfixen werden bei DOPPELTE_BELEGNUMMER ignoriert",
+            )
 
     # ── Test-Konfiguration (14 Checkboxen) ────────────────────
     test_checkboxes: list[gr.Checkbox] = []
@@ -454,6 +471,7 @@ with gr.Blocks(
         inputs=[
             file_input, webhook_input,
             zscore_slider, iqr_slider, near_dup_slider, threshold_slider,
+            prefix_ignore_input,
             *test_checkboxes,
         ],
         outputs=[summary_output, logs_output, table_output],

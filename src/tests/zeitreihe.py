@@ -90,44 +90,71 @@ class FehlendeMonatsbuchung(AnomalyTest):
             & (df["konto_soll"].astype(str).str.strip() != "")
         )
         subset = df.loc[has_konto_date].copy()
+        self.log("Subset", rows_with_konto_date=len(subset), total=len(df))
 
         if len(subset) < 10:
+            self.log("Abbruch: zu wenig Daten", rows=len(subset))
             return 0
 
         subset["_ym"] = subset["_datum"].dt.to_period("M")
         all_periods   = sorted(subset["_ym"].unique())
         if len(all_periods) < 3:
+            self.log("Abbruch: weniger als 3 Monate", months=len(all_periods))
             return 0
 
         # Volle Zeitspanne — nur so werden echte Lücken erkannt
         full_range = list(pd.period_range(all_periods[0], all_periods[-1], freq="M"))
+        self.log("Zeitspanne", von=str(all_periods[0]), bis=str(all_periods[-1]),
+                 monate_gesamt=len(full_range))
 
         # Mindest-Zeitfenster: < 6 Monate → zu kurz für aussagekräftige Lücken
         if len(full_range) < 6:
+            self.log("Abbruch: Zeitspanne zu kurz", months=len(full_range))
             return 0
 
         konto_month_cnt = subset.groupby("konto_soll", observed=True)["_ym"].nunique()
         # min_active basiert auf voller Zeitspanne, nicht nur auf vorhandenen Monaten
-        min_active      = max(3, len(full_range) * config.fehlende_buchung_min_quote)
+        min_active      = max(3, int(len(full_range) * config.fehlende_buchung_min_quote))
         regular         = konto_month_cnt[konto_month_cnt >= min_active].index
 
+        self.log("Reguläre Konten",
+                 total_konten=len(konto_month_cnt),
+                 min_active_months=min_active,
+                 quote=config.fehlende_buchung_min_quote,
+                 regular_konten=len(regular))
+
         if regular.empty:
+            self.log("Keine regulären Konten gefunden")
+            # Debug: Top-5 Konten mit meisten Monaten
+            top5 = konto_month_cnt.nlargest(5)
+            for konto, n in top5.items():
+                self.log(f"Top-Konto", konto=str(konto), active_months=int(n),
+                         needed=min_active)
             return 0
 
         prev_of    = {p: full_range[i - 1] for i, p in enumerate(full_range) if i > 0}
         next_of    = {p: full_range[i + 1] for i, p in enumerate(full_range[:-1])}
 
         flagged: set[int] = set()
+        konten_mit_luecken = 0
         for konto in regular:
             konto_data = subset[subset["konto_soll"] == konto]
             booked     = set(konto_data["_ym"])
             idx_by_ym  = konto_data.groupby("_ym").groups
+            gaps = [p for p in full_range if p not in booked]
 
-            for period in full_range:
-                if period not in booked:
-                    for adj in (prev_of.get(period), next_of.get(period)):
-                        if adj and adj in idx_by_ym:
-                            flagged.update(idx_by_ym[adj])
+            if gaps:
+                konten_mit_luecken += 1
+
+            for period in gaps:
+                for adj in (prev_of.get(period), next_of.get(period)):
+                    if adj and adj in idx_by_ym:
+                        flagged.update(idx_by_ym[adj])
+
+        self.log("Ergebnis",
+                 konten_mit_luecken=konten_mit_luecken,
+                 total_regular=len(regular),
+                 flagged=len(flagged))
 
         if flagged:
             df.loc[list(flagged), f"flag_{self.name}"] = True

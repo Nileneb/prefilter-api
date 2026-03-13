@@ -912,6 +912,29 @@ class TestRechnungsdatumBuchungsperiodeFallback:
         # Rechnungsdatum gleicher Monat → kein Flag
         assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 0
 
+    def test_erfassungsdatum_fallback(self):
+        """erfassungsdatum als Fallback wenn rechnungsdatum leer."""
+        df = _make_df(
+            datum=["2024-06-15"],
+            erfassungsdatum=["2024-01-10"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t23_rechnungsdatum_periode()
+        # Differenz > 2 Monate → Flag
+        assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 1
+
+    def test_erfassungsdatum_same_month_no_flag(self):
+        """erfassungsdatum im gleichen Monat wie datum → kein Flag."""
+        df = _make_df(
+            datum=["2024-06-15"],
+            erfassungsdatum=["2024-06-20"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t23_rechnungsdatum_periode()
+        assert engine.flag_counts["RECHNUNGSDATUM_PERIODE"] == 0
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # v9 — Neue Tests für False-Positive-Reduktion

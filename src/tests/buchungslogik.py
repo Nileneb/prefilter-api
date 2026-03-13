@@ -74,18 +74,30 @@ class RechnungsdatumPeriode(AnomalyTest):
     name = "RECHNUNGSDATUM_PERIODE"
     weight = 1.5
     critical = False
-    required_columns = ["_datum", "rechnungsdatum", "buchungsperiode"]
+    required_columns = ["_datum", "rechnungsdatum", "erfassungsdatum", "buchungsperiode"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
+        # Priorität: rechnungsdatum > erfassungsdatum > buchungsperiode
         rdatum = parse_date_series(df["rechnungsdatum"])
         has_both = df["_datum"].notna() & rdatum.notna()
+        source = "rechnungsdatum"
 
-        # Fallback: Buchungsperiode nutzen wenn kein Rechnungsdatum vorhanden
+        # Fallback 1: erfassungsdatum (ErfassungAm) als Proxy
+        if not has_both.any() and "erfassungsdatum" in df.columns:
+            rdatum = parse_date_series(df["erfassungsdatum"])
+            has_both = df["_datum"].notna() & rdatum.notna()
+            source = "erfassungsdatum"
+
+        # Fallback 2: buchungsperiode
         if not has_both.any() and "buchungsperiode" in df.columns:
             rdatum = parse_date_series(df["buchungsperiode"])
             has_both = df["_datum"].notna() & rdatum.notna()
+            source = "buchungsperiode"
+
+        self.log("Datumsquelle", source=source, rows_with_both=int(has_both.sum()))
 
         if not has_both.any():
+            self.log("Keine vergleichbaren Datumspaare gefunden")
             return 0
         buch_period = df.loc[has_both, "_datum"].dt.to_period("M")
         rech_period = rdatum.loc[has_both].dt.to_period("M")

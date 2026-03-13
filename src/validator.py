@@ -22,7 +22,7 @@ TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
     "BETRAG_IQR":             {"required": ["betrag"],   "optional": ["konto_soll"]},
     "KONTO_BETRAG_ANOMALIE":  {"required": ["betrag"],   "optional": ["konto_soll", "konto_haben"]},
     "NEAR_DUPLICATE":         {"required": ["kreditor", "betrag"],
-                               "optional": ["buchungstext", "konto_haben", "datum"]},
+                               "optional": ["buchungstext", "konto_haben", "konto_soll", "datum"]},
     "DOPPELTE_BELEGNUMMER":   {"required": ["belegnummer"]},
     "BELEG_KREDITOR_DUPLIKAT": {"required": ["belegnummer", "kreditor", "betrag"]},
     "STORNO":                 {"required": ["betrag"],   "optional": ["buchungstext", "generalumgekehrt"]},
@@ -30,10 +30,10 @@ TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
     "LEERER_BUCHUNGSTEXT":    {"required": ["buchungstext"]},
     "VELOCITY_ANOMALIE":      {"required": ["erfasser", "datum"]},
     "RECHNUNGSDATUM_PERIODE": {"required": ["datum"],
-                               "optional": ["rechnungsdatum", "buchungsperiode"]},
+                               "optional": ["rechnungsdatum", "erfassungsdatum", "buchungsperiode"]},
     "BUCHUNGSTEXT_PERIODE":   {"required": ["buchungstext", "datum"]},
     "MONATS_ENTWICKLUNG":     {"required": ["betrag", "datum"]},
-    "FEHLENDE_MONATSBUCHUNG": {"required": ["kreditor", "datum"]},
+    "FEHLENDE_MONATSBUCHUNG": {"required": ["datum"],     "optional": ["konto_soll"]},
 }
 
 # ── Alle 14 Tests in UI-Reihenfolge ─────────────────────────────────────────
