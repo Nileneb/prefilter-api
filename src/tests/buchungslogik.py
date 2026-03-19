@@ -20,7 +20,7 @@ from src.tests.base import AnomalyTest, EngineStats
 class Storno(AnomalyTest):
     name = "STORNO"
     weight = 1.5
-    critical = True
+    critical = False
     required_columns = ["_abs", "_betrag", "buchungstext", "generalumgekehrt"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
@@ -29,10 +29,12 @@ class Storno(AnomalyTest):
             stats.b_mean + stats.b_std if stats.b_std > 0 else float("inf")
         )
 
-        # Textbasierte Erkennung (zuverlässig)
+        # Textbasierte Erkennung — synchron mit engine._prepare() _is_storno
         hard_mask = txt.str.contains(
-            r"storno|korrektur|r[uü]ckbuchung", regex=True, na=False
+            r"storno|stornierung|r[uü]ckbuchung|gutschrift.*storn", regex=True, na=False
         )
+        # "korrektur" nur bei negativem Betrag als Storno werten
+        korrektur_mask = txt.str.contains(r"\bkorrektur\b", regex=True, na=False) & (df["_betrag"] < 0)
 
         # ENTFERNT: neg_mask = df["_betrag"] < 0
         # Negative Beträge sind in Soll/Haben-Logik NORMAL!
@@ -40,6 +42,7 @@ class Storno(AnomalyTest):
 
         gutschrift_mask = (
             txt.str.contains("gutschrift", na=False)
+            & ~txt.str.contains("storn", na=False)  # gutschrift.*storn already in hard_mask
             & (df["_abs"] > gutschrift_schwelle)
         )
 
@@ -54,7 +57,7 @@ class Storno(AnomalyTest):
             & (gu_str != "0")
         )
 
-        mask = hard_mask | gutschrift_mask | gu_mask
+        mask = hard_mask | korrektur_mask | gutschrift_mask | gu_mask
         return self._flag(df, mask)
 
 
@@ -73,6 +76,10 @@ class LeererBuchungstext(AnomalyTest):
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         txt  = df["buchungstext"].astype(str).str.strip()
         mask = (txt == "") | (txt.str.lower().isin(self._GENERIC)) | (txt.str.len() <= 2)
+        # Nur PnL-Konten (Ertrag/Aufwand) flaggen — Bestand/Kostenrechnung ignorieren
+        if "_kontoklasse" in df.columns:
+            pnl_mask = df["_kontoklasse"].isin({"Ertrag", "Aufwand"})
+            mask = mask & pnl_mask
         return self._flag(df, mask)
 
 

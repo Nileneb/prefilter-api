@@ -1,4 +1,4 @@
-# Buchungs-Anomalie Pre-Filter v6.1
+# Buchungs-Anomalie Pre-Filter v6.2
 
 Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) entgegennimmt, 13 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
 
@@ -18,7 +18,14 @@ Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Expo
 - **DOPPELTE_BELEGNUMMER**: Reguläre-Muster-Ausschluss (Nummernkreise/Buchungsläufe) + min_count 5→10 (~1360 → ~150 Flags)
 - **BELEG_KREDITOR_DUPLIKAT**: Level-2-Zeitfenster 7→3 Tage, regular_pct 20%→15% (~1362 → ~200 Flags)
 - **History-Modul** (`src/history.py`): Monatsdurchschnitte pro Konto persistent speichern, Vergleich mit letztem Lauf (Trend-Erkennung)
-- **Erwartete Gesamtreduktion**: ~52% verdächtig → ~7-9% verdächtig
+
+### v6.2 — Output-Logik-Überarbeitung (False-Positive-Kernproblem)
+
+- **STORNO `critical=False`**: Storno-Buchungen erzwingen nicht mehr allein den Output — nur noch bei Score ≥ threshold (vorher: jede Storno-Buchung immer im Output)
+- **STORNO Regex synchronisiert**: `Storno.run()` nutzt jetzt dieselbe Regex wie `engine._prepare()`: `storno|stornierung|rückbuchung|gutschrift.*storn` + `\bkorrektur\b` nur bei negativem Betrag
+- **BELEG_KREDITOR_DUPLIKAT days=1**: Level-2-Zeitfenster 3→1 Tag + same-day-of-month Skip (monatliche Regelzahlungen am gleichen Kalendertag werden ignoriert)
+- **LEERER_BUCHUNGSTEXT PnL-only**: Nur Ertrag-/Aufwand-Konten werden geflaggt — Bestand/Kostenrechnung ignoriert
+- **FEHLENDE_MONATSBUCHUNG min_quote=0.5**: Mindestanteil aktiver Monate 30%→50% (strengere Reguläritätsprüfung)
 
 ---
 

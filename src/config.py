@@ -49,8 +49,8 @@ class AnalysisConfig(BaseModel):
         description="Komma-getrennte Belegnummer-Präfixe die ignoriert werden (z.B. 'RW, SB')",
     )
     beleg_kreditor_days: int = Field(
-        3, ge=1,
-        description="Zeitfenster in Tagen für BELEG_KREDITOR_DUPLIKAT Level 2 (Standard: 3)",
+        1, ge=1,
+        description="Zeitfenster in Tagen für BELEG_KREDITOR_DUPLIKAT Level 2 (Standard: 1)",
     )
     beleg_kreditor_max_group_size: int = Field(
         20, ge=2,
@@ -103,8 +103,8 @@ class AnalysisConfig(BaseModel):
 
     # ── Fehlende Monatsbuchung ───────────────────────────────
     fehlende_buchung_min_quote: float = Field(
-        0.3, ge=0.1, le=1.0,
-        description="Mindestanteil aktiver Monate für FEHLENDE_MONATSBUCHUNG (Standard: 0.3 = 30%)",
+        0.5, ge=0.1, le=1.0,
+        description="Mindestanteil aktiver Monate für FEHLENDE_MONATSBUCHUNG (Standard: 0.5 = 50%)",
     )
 
     # ── Output-Steuerung ─────────────────────────────────────

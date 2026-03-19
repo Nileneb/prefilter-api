@@ -419,6 +419,9 @@ class BelegKreditorDuplikat(AnomalyTest):
                 continue
 
             dated = grp[grp["_datum"].notna()].sort_values("_datum")
+            # Same-day-of-month skip: monatliche Regelzahlungen am gleichen Tag
+            if len(dated) >= 2 and dated["_datum"].dt.day.nunique() == 1:
+                continue
             if len(dated) < 2:
                 level2_skipped_no_dates += 1
                 continue

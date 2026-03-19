@@ -441,28 +441,36 @@ class TestEngineKontoBetragAnomalie:
 
 class TestEngineLeererBuchungstext:
     def test_empty_text_flagged(self):
-        df = _make_df(buchungstext=[""])
+        df = _make_df(buchungstext=[""], konto_soll=["42000"])
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t21_leerer_buchungstext()
         assert engine.flag_counts["LEERER_BUCHUNGSTEXT"] == 1
 
     def test_generic_text_flagged(self):
-        df = _make_df(buchungstext=["diverse"])
+        df = _make_df(buchungstext=["diverse"], konto_soll=["42000"])
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t21_leerer_buchungstext()
         assert engine.flag_counts["LEERER_BUCHUNGSTEXT"] == 1
 
     def test_short_text_flagged(self):
-        df = _make_df(buchungstext=["ab"])
+        df = _make_df(buchungstext=["ab"], konto_soll=["42000"])
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t21_leerer_buchungstext()
         assert engine.flag_counts["LEERER_BUCHUNGSTEXT"] == 1
 
     def test_proper_text_not_flagged(self):
-        df = _make_df(buchungstext=["Bezahlung Rechnung 12345 vom 15.01.2024"])
+        df = _make_df(buchungstext=["Bezahlung Rechnung 12345 vom 15.01.2024"], konto_soll=["42000"])
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t21_leerer_buchungstext()
+        assert engine.flag_counts["LEERER_BUCHUNGSTEXT"] == 0
+
+    def test_bestand_konto_not_flagged(self):
+        """Bestandskonten werden bei LEERER_BUCHUNGSTEXT nicht geflaggt."""
+        df = _make_df(buchungstext=[""], konto_soll=["1200"])
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t21_leerer_buchungstext()
@@ -811,15 +819,14 @@ class TestEngineOutputThreshold:
         assert ratio < 50, f"Ratio {ratio:.1f}% zu hoch für normale Daten"
 
     def test_critical_flag_always_in_output(self):
-        """Buchungen mit Critical-Flag erscheinen auch wenn Score < OUTPUT_THRESHOLD."""
-        # STORNO hat Gewicht 1.5 < OUTPUT_THRESHOLD (2.0) → nur via Critical-Pfad im Output
+        """STORNO hat critical=False (v9): Score 1.5 < OUTPUT_THRESHOLD 2.0 → NICHT im Output."""
         df = _make_df(
             betrag=["100,00"],
             buchungstext=["Storno Rechnung 001"],
         )
         engine = AnomalyEngine(df)
         result = engine.run()
-        assert result["statistics"]["total_output"] >= 1
+        assert result["statistics"]["total_output"] == 0
 
 
 class TestEngineFullRun:
