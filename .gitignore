@@ -18,4 +18,5 @@ run_*
 tests/fixtures/*.csv
 tests/fixtures/*.xlsx
 tests/fixtures/*.xls
+data/feedback/
 data/uploads/

@@ -1,4 +1,4 @@
-# Buchungs-Anomalie Pre-Filter v6.3.2
+# Buchungs-Anomalie Pre-Filter v7.0
 
 Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) entgegennimmt, 14 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
 

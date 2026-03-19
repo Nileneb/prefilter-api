@@ -20,12 +20,14 @@ services:
       - LOG_DIR=/data/logs
       - HISTORY_DIR=/data/history
       - UPLOAD_STORE_DIR=/data/upload-store
+      - FEEDBACK_DIR=/data/feedback
       - TZ=Europe/Berlin
     volumes:
       - uploads:/data/uploads
       - ./logs:/data/logs
       - history:/data/history
       - upload-store:/data/upload-store
+      - feedback-data:/data/feedback
     depends_on:
       redis:
         condition: service_healthy
@@ -50,11 +52,13 @@ services:
       - LOG_DIR=/data/logs
       - HISTORY_DIR=/data/history
       - UPLOAD_STORE_DIR=/data/upload-store
+      - FEEDBACK_DIR=/data/feedback
     volumes:
       - uploads:/data/uploads
       - ./logs:/data/logs
       - history:/data/history
       - upload-store:/data/upload-store
+      - feedback-data:/data/feedback
     depends_on:
       redis:
         condition: service_healthy
@@ -77,3 +81,4 @@ volumes:
   uploads:
   history:
   upload-store:
+  feedback-data:
