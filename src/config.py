@@ -138,3 +138,9 @@ class AnalysisConfig(BaseModel):
         0.02, ge=0.001, le=0.5,
         description="Erwarteter Anomalie-Anteil für Isolation Forest (Standard: 0.02 = 2%)",
     )
+
+    # ── Gelernte Gewichte (via Feedback-Training) ─────────────
+    custom_weights: dict[str, float] | None = Field(
+        None,
+        description="Optional: Vom Trainer gelernte Flag-Gewichte. Überschreibt Defaults pro Flag.",
+    )

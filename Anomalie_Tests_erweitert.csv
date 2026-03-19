@@ -10,7 +10,7 @@
 9;BUCHUNGSTEXT_PERIODE;Periodenangabe im Text ≠ Buchungsdatum;;1.0;;✓;"buchungstext; datum";"Buchungstext; Belegdatum";✓;✅ funktioniert
 10;NEUER_KREDITOR_HOCH;Neuer Kreditor (≤2 Buchungen) + hoher Betrag;x;2.5;✓;✓;"kreditor; betrag";"Bezeichnung; FiBuBetrag";✓;✅ funktioniert (Bezeichnung→kreditor)
 11;KONTO_BETRAG_ANOMALIE;Betrag ist Ausreißer auf Kontoebene (Z-Score);?;2.0;✓;✓;"konto; betrag";"Kontonummer; FiBuBetrag";✓;✅ funktioniert
-12;VELOCITY_ANOMALIE;Ungewöhnlich viele Buchungen eines Erfassers/Tag;x;1.5;;✓;"erfasser; datum";"(nicht im Export); Belegdatum";❌ erfasser fehlt;❌ läuft leer — Erfasser nicht im Diamant-Export
+12;VELOCITY_ANOMALIE;Ungewöhnlich viele Buchungen eines Erfassers/Tag;❌ entfernt;-;;✗;"erfasser; datum";"(nicht im Export); Belegdatum";❌ erfasser fehlt;❌ entfernt v7.0 — Diamant liefert kein Erfasser-Feld
 13;MONATS_ENTWICKLUNG;Monatsbetrag auf GuV-Konto ist Z-Score-Ausreißer;;1.5;;✓;"datum; betrag; konto";"Belegdatum; FiBuBetrag; Kontonummer";✓;✅ funktioniert
 14;FEHLENDE_MONATSBUCHUNG;Konto hat regulär monatl. Buchungen, fehlt aber;;1.0;;✓;"datum; konto";"Belegdatum; Kontonummer";✓;✅ funktioniert
 15;SELTENE_KONTIERUNG;Ungewöhnliche Soll/Haben-Kontenkombinationen;nicht benötigt;-;;✗;"konto; konto_haben";"Kontonummer; (kein Gegenkonto)";⚠️ konto_haben fehlt;nicht implementiert + nicht benötigt

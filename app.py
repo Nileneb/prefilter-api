@@ -30,6 +30,8 @@ from src.validator import (
     validate_columns, format_validation_report, ValidationResult,
 )
 from src.charts import ChartBuilder, DynamicChartBuilder, DYNAMIC_CHART_TYPES, classify_columns, check_column_quality, _empty_figure
+from src.feedback import FeedbackStore, FeedbackLabel, MIN_LABELS_FOR_STATS
+from src.feedback_stats import format_feedback_report
 
 import plotly.graph_objects as go
 
@@ -66,6 +68,9 @@ _last_engine_df: pd.DataFrame | None = None   # für on-demand Charts
 _last_result: dict | None = None
 _last_file_path: str | None = None            # für Chart-Rebuild im Worker-Modus
 _last_flags_parquet: str | None = None        # Flags-Parquet vom Worker für Chart-Rebuild
+_last_mandant_id: str = "unknown"             # für Feedback-Speicherung
+_last_analysis_ts: str = ""                   # Zeitpunkt der letzten Analyse
+_feedback_store = FeedbackStore()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -157,6 +162,7 @@ def _format_result(result: dict, webhook_url: str) -> tuple[str, pd.DataFrame]:
     if result["verdaechtige_buchungen"]:
         display_df = pd.DataFrame(result["verdaechtige_buchungen"])
         display_df = display_df.sort_values("anomaly_score", ascending=False)
+        display_df.insert(0, "bewertung", "")
     else:
         display_df = pd.DataFrame()
 
@@ -221,11 +227,13 @@ def analyze_file(
     """Generator: yielded (summary, logs, table, csv, charts...) bei jedem Schritt."""
     global _current_job_id
     global _last_engine_df, _last_result, _last_file_path, _last_flags_parquet
+    global _last_mandant_id, _last_analysis_ts
     _current_job_id = None
     _last_engine_df = None
     _last_result = None
     _last_file_path = None
     _last_flags_parquet = None
+    _last_analysis_ts = datetime.now().isoformat()
     live_log_lines: list[str] = []
 
     def log(msg: str) -> None:
@@ -314,6 +322,7 @@ def analyze_file(
         # Upload + Ergebnis persistent speichern
         try:
             mandant_id = _detect_mandant(df, filepath)
+            _last_mandant_id = mandant_id
             store_upload(mandant_id, filepath, os.path.basename(filepath))
             store_result(mandant_id, os.path.basename(filepath), result, display_df)
             log(f"📁 Upload + Ergebnis gespeichert unter data/uploads/{mandant_id}/")
@@ -415,6 +424,14 @@ def analyze_file(
     _last_file_path = dest
     _last_flags_parquet = data.get("flags_parquet")
     _last_engine_df = None  # wird on-demand beim ersten Chart-Klick gebaut
+    # Mandant für Feedback ableiten
+    try:
+        from src.parser import read_upload, map_columns
+        _tmp_df = read_upload(dest)
+        _tmp_df = map_columns(_tmp_df)
+        _last_mandant_id = _detect_mandant(_tmp_df, dest)
+    except Exception:
+        _last_mandant_id = _detect_mandant(pd.DataFrame(), dest)
     log("📊 Charts können jetzt im Tab 'Visualisierungen' generiert werden.")
     yield current_state(summary, display_df, csv_path)
 
@@ -426,6 +443,44 @@ def cancel_analysis():
         _r.set(f"job:{_current_job_id}:cancelled", "1", ex=JOB_TTL)
         _r.hset(f"job:{_current_job_id}", "status", "cancelling")
     return "Abbruch-Signal gesendet -- wird nach dem laufenden Test wirksam."
+
+
+# ══════════════════════════════════════════════════════════════
+# FEEDBACK HANDLER
+# ══════════════════════════════════════════════════════════════
+
+def save_feedback(table_data: pd.DataFrame, pruefer: str) -> str:
+    """Iteriert über die Ergebnis-Tabelle und speichert alle Zeilen mit Bewertung."""
+    if table_data is None or table_data.empty:
+        return "⚠️ Keine Daten vorhanden."
+    if not pruefer or not pruefer.strip():
+        return "⚠️ Bitte Prüfer-Kürzel eingeben."
+    if "bewertung" not in table_data.columns:
+        return "⚠️ Spalte 'bewertung' fehlt in Tabelle."
+
+    pruefer = pruefer.strip()
+    saved = 0
+    valid_labels = {"tp", "fp", "unsure"}
+
+    for idx, row in table_data.iterrows():
+        raw_label = str(row.get("bewertung", "")).strip().lower()
+        if not raw_label or raw_label not in valid_labels:
+            continue
+        label = FeedbackLabel(
+            mandant_id=_last_mandant_id,
+            analysis_timestamp=_last_analysis_ts,
+            row_index=int(idx),
+            belegnummer=str(row.get("belegnummer", "")),
+            anomaly_score=float(row.get("anomaly_score", 0)),
+            anomaly_flags=str(row.get("anomaly_flags", "")),
+            label=raw_label,
+            pruefer=pruefer,
+        )
+        _feedback_store.save(label)
+        saved += 1
+
+    total = _feedback_store.count(_last_mandant_id)
+    return f"✅ {saved} Labels gespeichert. Gesamt für Mandant {_last_mandant_id}: {total}"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -727,11 +782,25 @@ with gr.Blocks(
             )
         with gr.Tab("Verdächtige Buchungen"):
             table_output = gr.Dataframe(
-                label="Verdächtige Buchungen (sortiert nach Score)",
-                interactive=False,
+                label="Verdächtige Buchungen (sortiert nach Score) — Spalte 'bewertung' mit tp/fp/unsure ausfüllen",
+                interactive=True,
                 wrap=True,
             )
             export_file = gr.File(label="📥 CSV-Download", visible=False)
+            gr.Markdown("### 🏷️ Prüfer-Feedback")
+            gr.Markdown(
+                "Bewerte verdächtige Buchungen: Trage in der Spalte **bewertung** ein:\n"
+                "- **tp** = True Positive (echte Anomalie)\n"
+                "- **fp** = False Positive (Fehlalarm)\n"
+                "- **unsure** = Unklar"
+            )
+            with gr.Row():
+                feedback_pruefer = gr.Textbox(
+                    label="Prüfer-Kürzel", placeholder="z.B. MM, JS",
+                    scale=1,
+                )
+                feedback_save_btn = gr.Button("💾 Feedback speichern", variant="secondary", scale=1)
+                feedback_status = gr.Textbox(label="Status", interactive=False, scale=2)
         with gr.Tab("📜 Live-Log"):
             logs_output = gr.Textbox(
                 label="Live-Log", lines=25, interactive=False,
@@ -838,6 +907,15 @@ with gr.Blocks(
             history_btn = gr.Button("🔄 Laden")
             history_table = gr.Dataframe(label="Gespeicherte Analysen", interactive=False)
 
+        with gr.Tab("📈 Feedback-Stats"):
+            gr.Markdown(
+                "### Feedback-Statistiken\n"
+                f"Zeigt Precision und FP-Rate pro Flag. Mindestens **{MIN_LABELS_FOR_STATS}** Labels erforderlich."
+            )
+            stats_mandant = gr.Textbox(label="Mandant-ID (leer = alle)", value="")
+            stats_btn = gr.Button("📈 Statistiken laden")
+            stats_output = gr.Textbox(label="Bericht", lines=20, interactive=False)
+
     # ── Event: File-Upload → Validierung ──────────────────────
     file_input.change(
         fn=validate_file,
@@ -865,6 +943,13 @@ with gr.Blocks(
         outputs=[summary_output],
     )
 
+    # ── Event: Feedback speichern ─────────────────────────────
+    feedback_save_btn.click(
+        fn=save_feedback,
+        inputs=[table_output, feedback_pruefer],
+        outputs=[feedback_status],
+    )
+
     # ── Event: History laden ──────────────────────────────────
     def load_history(mandant_id):
         uploads = list_uploads(mandant_id.strip())
@@ -876,6 +961,17 @@ with gr.Blocks(
         fn=load_history,
         inputs=[history_mandant],
         outputs=[history_table],
+    )
+
+    # ── Event: Feedback-Statistiken laden ─────────────────────
+    def load_feedback_stats(mandant_id: str) -> str:
+        mid = mandant_id.strip() or None
+        return format_feedback_report(_feedback_store, mid)
+
+    stats_btn.click(
+        fn=load_feedback_stats,
+        inputs=[stats_mandant],
+        outputs=[stats_output],
     )
 
     # ── Events: Einzelne Charts on-demand ─────────────────────

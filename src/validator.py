@@ -33,6 +33,7 @@ TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
     "BUCHUNGSTEXT_PERIODE":   {"required": ["buchungstext", "datum"]},
     "MONATS_ENTWICKLUNG":     {"required": ["betrag", "datum"]},
     "FEHLENDE_MONATSBUCHUNG": {"required": ["datum"],     "optional": ["konto_soll"]},
+    "ISOLATION_ANOMALIE":    {"required": ["betrag"],    "optional": ["datum", "konto_soll"]},
 }
 
 # ── Alle 13 Tests in UI-Reihenfolge ─────────────────────────────────────────
@@ -46,6 +47,7 @@ TEST_CATEGORIES: dict[str, list[str]] = {
     "Buchungslogik": ["STORNO", "LEERER_BUCHUNGSTEXT", "RECHNUNGSDATUM_PERIODE", "BUCHUNGSTEXT_PERIODE"],
     "Kreditor-Tests": ["NEUER_KREDITOR_HOCH"],
     "Zeitreihen-Tests": ["MONATS_ENTWICKLUNG", "FEHLENDE_MONATSBUCHUNG"],
+    "Experimentell": ["ISOLATION_ANOMALIE"],
 }
 
 
@@ -67,6 +69,7 @@ class ValidationResult:
     tests_ok: list[str] = field(default_factory=list)
     tests_blocked: dict[str, str] = field(default_factory=dict)     # test -> reason
     tests_degraded: dict[str, str] = field(default_factory=dict)    # test -> reason
+    warnings: list[str] = field(default_factory=list)               # Allgemeine Warnungen
 
 
 def validate_columns(df: pd.DataFrame) -> ValidationResult:
@@ -114,6 +117,26 @@ def validate_columns(df: pd.DataFrame) -> ValidationResult:
         else:
             result.tests_ok.append(test_name)
 
+    # ── Allgemeine Warnungen ──────────────────────────────────────
+    sh_rate = _col_fill_rate(df, "soll_haben")
+    if sh_rate == 0.0:
+        result.warnings.append(
+            "soll_haben fehlt → Ertrag/Aufwand-Vorzeichen nicht betriebswirtschaftlich "
+            "korrekt, Fallback auf Original-Vorzeichen"
+        )
+    elif sh_rate < 50.0:
+        result.warnings.append(
+            f"soll_haben nur {sh_rate:.0f}% befüllt → Vorzeichen-Berechnung teilweise ungenau"
+        )
+
+    kh_rate = _col_fill_rate(df, "konto_haben")
+    if kh_rate < 50.0:
+        pct = 100.0 - kh_rate
+        result.warnings.append(
+            f"Gegenkonto (konto_haben) fehlt in {pct:.0f}% der Zeilen → "
+            f"einige Tests eingeschränkt, Beleg-Paar-Heuristik aktiv"
+        )
+
     return result
 
 
@@ -146,4 +169,11 @@ def format_validation_report(v: ValidationResult) -> str:
     lines.append(f"✅ {ok_count} Tests voll einsatzfähig, "
                  f"{len(v.tests_degraded)} eingeschränkt, "
                  f"{len(v.tests_blocked)} blockiert")
+
+    if v.warnings:
+        lines.append("")
+        lines.append("Hinweise:")
+        for w in v.warnings:
+            lines.append(f"  ⚠️ {w}")
+
     return "\n".join(lines)

@@ -49,7 +49,7 @@ COLUMN_ALIASES = {
     "kreditor":         ["kreditor", "lieferant", "vendor", "supplier", "creditor",
                          "bezeichnung"],
     # ── Diamant-Spalten ──────────────────────────────────────
-    "soll_haben":       ["soll_haben", "sollhaben", "s_h", "sh", "soll/haben"],
+    "soll_haben":       ["soll_haben", "sollhaben", "s_h", "sh", "soll/haben", "l"],
     "klasse":           ["klasse", "class"],
     "belegart":         ["belegart", "beleg_art"],
     "buchungsperiode":  ["buchungsperiode", "periode", "period"],

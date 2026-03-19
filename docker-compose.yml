@@ -20,6 +20,7 @@ services:
       - LOG_DIR=/data/logs
       - HISTORY_DIR=/data/history
       - UPLOAD_STORE_DIR=/data/upload-store
+      - TZ=Europe/Berlin
     volumes:
       - uploads:/data/uploads
       - ./logs:/data/logs

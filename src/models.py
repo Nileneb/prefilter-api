@@ -40,7 +40,6 @@ class FlagCounts(BaseModel):
     NEUER_KREDITOR_HOCH: int = 0
     KONTO_BETRAG_ANOMALIE: int = 0
     LEERER_BUCHUNGSTEXT: int = 0
-    VELOCITY_ANOMALIE: int = 0
     RECHNUNGSDATUM_PERIODE: int = 0
     BUCHUNGSTEXT_PERIODE: int = 0
     MONATS_ENTWICKLUNG: int = 0

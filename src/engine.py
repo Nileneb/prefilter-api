@@ -57,6 +57,66 @@ OUTPUT_THRESHOLD: float      = 2.0   # Default — überschreibbar per config
 MAX_OUTPUT_ROWS: int         = 1000  # Default
 
 
+# ── Gegenkonto-Heuristik ─────────────────────────────────────────────────────
+
+def find_counterpart_rows(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Versucht konto_haben zu füllen basierend auf Beleg-Paaren.
+
+    Logik: Innerhalb desselben Belegs (_beleg_id):
+    - Finde Zeilen mit entgegengesetztem Vorzeichen (_betrag)
+    - Wenn genau 2 Zeilen mit |betrag_a| == |betrag_b|: fülle gegenseitig
+    - Sonst: leer lassen (konservativ)
+
+    Returns:
+        (konto_haben_filled, inferred_mask)
+        konto_haben_filled: Series mit gefülltem konto_haben
+        inferred_mask: Boolean-Series — True wo konto_haben inferiert wurde
+    """
+    result = df["konto_haben"].astype(str).str.strip().copy()
+    inferred = pd.Series(False, index=df.index)
+
+    # Nur Belege mit genau 2 Zeilen betrachten (konservativ)
+    beleg_sizes = df.groupby("_beleg_id").size()
+    pair_belege = beleg_sizes[beleg_sizes == 2].index
+
+    if len(pair_belege) == 0:
+        return result, inferred
+
+    pair_mask = df["_beleg_id"].isin(pair_belege)
+    pairs = df.loc[pair_mask].copy()
+
+    # Für jedes 2er-Paar: prüfe ob |betrag_a| == |betrag_b| und Vorzeichen entgegengesetzt
+    for beleg_id, grp in pairs.groupby("_beleg_id"):
+        if len(grp) != 2:
+            continue
+        idx0, idx1 = grp.index[0], grp.index[1]
+        abs0, abs1 = grp.at[idx0, "_abs"], grp.at[idx1, "_abs"]
+        bet0, bet1 = grp.at[idx0, "_betrag"], grp.at[idx1, "_betrag"]
+
+        # Beträge müssen gleich sein (abs) und Vorzeichen entgegengesetzt ODER gleich
+        if abs0 == 0 or abs1 == 0:
+            continue
+        if abs(abs0 - abs1) > 0.01:
+            continue
+
+        konto0 = str(grp.at[idx0, "konto_soll"]).strip()
+        konto1 = str(grp.at[idx1, "konto_soll"]).strip()
+
+        # Nur füllen wenn konto_haben aktuell leer ist
+        curr0 = result.at[idx0]
+        curr1 = result.at[idx1]
+        empty_vals = {"", "nan", "null", "none"}
+
+        if curr0.lower() in empty_vals and konto1 and konto1.lower() not in empty_vals:
+            result.at[idx0] = konto1
+            inferred.at[idx0] = True
+        if curr1.lower() in empty_vals and konto0 and konto0.lower() not in empty_vals:
+            result.at[idx1] = konto0
+            inferred.at[idx1] = True
+
+    return result, inferred
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ANOMALY ENGINE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -88,6 +148,24 @@ class AnomalyEngine:
         return False
 
     def _prepare(self) -> None:
+        """Bereitet den DataFrame für die Analyse vor.
+
+        Reihenfolge ist KRITISCH — spätere Schritte hängen von früheren ab:
+
+        1. Fehlende kanonische Spalten mit "" initialisieren
+        2. _betrag (float64) + _abs berechnen — parse_german_number_series
+        3. _datum berechnen — parse_date_series
+        4. _kontoklasse berechnen — aus konto_soll via src/accounting.py
+        5. _is_storno berechnen — generalumgekehrt + Buchungstext-Keywords
+        6. _beleg_id setzen — dvbelegnummer oder belegnummer Fallback
+        7. _betrag_signed berechnen — aus _abs + _kontoklasse + soll_haben
+        8. _score initialisieren
+        9. Kategorische Spalten setzen (.str.strip() für Diamant fixed-width)
+        10. AI-Features: Text-Embeddings + Kreditor-Clustering (optional)
+        11. Flag-Spalten initialisieren (flag_<NAME> = False)
+
+        DANACH: compute_stats() und Tests ausführen (in run()).
+        """
         df = self.df
         for col in COLUMN_ALIASES:
             if col not in df.columns:
@@ -120,8 +198,26 @@ class AnomalyEngine:
         else:
             df["_beleg_id"] = df["belegnummer"].astype(str).str.strip()
 
+        # ── Gegenkonto-Heuristik: konto_haben aus Beleg-Paaren inferieren ────
+        kh_filled, kh_inferred = find_counterpart_rows(df)
+        n_inferred = int(kh_inferred.sum())
+        if n_inferred > 0:
+            df["konto_haben"] = kh_filled
+            df["_konto_haben_inferred"] = kh_inferred
+            self._log(f"konto_haben gefüllt für {n_inferred} von {len(df)} Zeilen (Beleg-Paar-Heuristik)")
+        else:
+            df["_konto_haben_inferred"] = False
+
         df["_betrag_signed"] = compute_signed_betrag(df).astype("float64")
         df["_score"]  = 0.0
+
+        # soll_haben Warnung wenn leer/fehlend
+        sh_vals = df.get("soll_haben", pd.Series("", index=df.index)).astype(str).str.strip()
+        sh_filled = (sh_vals.str.upper().isin({"S", "H", "SOLL", "HABEN"})).sum()
+        if sh_filled == 0:
+            self._log("⚠️ soll_haben fehlt/leer → _betrag_signed nutzt Original-Vorzeichen (Fallback)")
+        else:
+            self._log(f"soll_haben: {sh_filled}/{len(df)} Zeilen befüllt")
 
         # Kategorische Spalten — beschleunigt GroupBy und spart RAM
         # .str.strip() entfernt trailing Spaces aus Diamant fixed-width Export
@@ -243,8 +339,10 @@ class AnomalyEngine:
 
     def _compute_scores(self) -> None:
         score = pd.Series(0.0, index=self.df.index)
+        custom = self.config.custom_weights
         for name, weight in WEIGHTS.items():
-            score += self.df[f"flag_{name}"].astype(float) * weight
+            w = custom.get(name, weight) if custom else weight
+            score += self.df[f"flag_{name}"].astype(float) * w
         self.df["_score"] = score
 
     # ── Run ───────────────────────────────────────────────────────────────────
