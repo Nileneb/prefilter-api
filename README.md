@@ -239,7 +239,7 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 | 04 | `NEAR_DUPLICATE`          | 2.0     | ✓        | Gleicher Betrag + Konten, Buchungsdatum innerhalb von 3 Tagen             |
 | 05 | `DOPPELTE_BELEGNUMMER`    | 2.0     | ✓        | Gleiche Belegnummer taucht mehrfach auf                                   |
 | 06 | `BELEG_KREDITOR_DUPLIKAT` | 2.5     | ✓        | Gleiche Belegnummer + gleicher Kreditor (mögliche doppelte Zahlung)        |
-| 07 | `STORNO`                  | 1.5     | ✓        | Buchungstext enthält Storno/Korrektur/Rückbuchung oder Generalumgekehrt   |
+| 07 | `STORNO`                  | 1.5     |          | Buchungstext enthält Storno/Korrektur/Rückbuchung oder Generalumgekehrt   |
 | 08 | `LEERER_BUCHUNGSTEXT`     | 1.0     |          | Buchungstext fehlt oder ist kürzer als 3 Zeichen                          |
 | 09 | `RECHNUNGSDATUM_PERIODE`  | 1.5     |          | Erfassungsmonat weicht vom Buchungsmonat ab (Periodenverschiebung)        |
 | 10 | `BUCHUNGSTEXT_PERIODE`    | 1.0     |          | Periodenangabe im Buchungstext stimmt nicht mit Buchungsdatum überein     |

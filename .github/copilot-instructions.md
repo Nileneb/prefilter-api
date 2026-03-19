@@ -198,13 +198,13 @@ COLUMN_ALIASES = {
 | 01 | betrag.py | BETRAG_ZSCORE | 2.0 | Ja | JA |
 | 02 | betrag.py | BETRAG_IQR | 1.5 | Nein | JA |
 | 03 | betrag.py | KONTO_BETRAG_ANOMALIE | 2.0 | Ja | JA |
-| 04 | duplikate.py | NEAR_DUPLICATE | 2.0 | Ja | JA + Beleg-intern |
+| 04 | duplikate.py | NEAR_DUPLICATE | 2.0 | Ja | JA + Beleg-intern + Same-day-Skip |
 | 05 | duplikate.py | DOPPELTE_BELEGNUMMER | 2.0 | Ja | JA + Beleg-intern |
 | 06 | duplikate.py | BELEG_KREDITOR_DUPLIKAT | 2.5 | Ja | JA + Beleg-intern + same-day-of-month Skip |
 | 07 | buchungslogik.py | STORNO | 1.5 | **Nein (v6.2)** | Nein (ist der Storno-Test) |
 | 08 | buchungslogik.py | LEERER_BUCHUNGSTEXT | 1.0 | Nein | Nein (**nur PnL-Konten v6.2**) |
-| 09 | buchungslogik.py | RECHNUNGSDATUM_PERIODE | 1.5 | Nein | Nein |
-| 10 | buchungslogik.py | BUCHUNGSTEXT_PERIODE | 1.0 | Nein | Nein |
+| 09 | buchungslogik.py | RECHNUNGSDATUM_PERIODE | 1.5 | Nein | JA |
+| 10 | buchungslogik.py | BUCHUNGSTEXT_PERIODE | 1.0 | Nein | JA |
 | 11 | kreditor.py | NEUER_KREDITOR_HOCH | 2.5 | Ja | JA |
 | 12 | zeitreihe.py | MONATS_ENTWICKLUNG | 1.5 | Nein | JA |
 | 13 | zeitreihe.py | FEHLENDE_MONATSBUCHUNG | 1.0 | Nein | JA |
@@ -222,6 +222,7 @@ Tests mit Storno-Ausschluss muessen:
 - Gleichen Kreditor + Belegnummer -> BELEG_KREDITOR_DUPLIKAT falsch-positiv
 - Oft hohe Betraege -> BETRAG_ZSCORE/IQR falsch-positiv
 - "Fehlende" Monate -> FEHLENDE_MONATSBUCHUNG unsinnig
+- Periodenabweichung ist bei Stornos NORMAL -> RECHNUNGSDATUM_PERIODE / BUCHUNGSTEXT_PERIODE falsch-positiv
 
 ---
 
@@ -273,9 +274,10 @@ ABER: Beleg-interne Zeilen (gleiche _beleg_id) IGNORIEREN
 ABER: Stornos ausschliessen
 ```
 
-### 4. Near-Duplicate (KORRIGIERT v6.0)
+### 4. Near-Duplicate (KORRIGIERT v6.0, AKTUALISIERT v6.2)
 ```
-Gleicher Betrag + Konto, Datum <= 3 Tage -> verdaechtig
+Gleicher Betrag + Konto, Datum 1-3 Tage Abstand -> verdaechtig
+ABER: Same-day (0 Tage) = Soll/Haben-Gegenbuchung oder Korrektur+Neubuchung -> KEIN Duplikat
 ABER: Buchungszeilen desselben Belegs (_beleg_id) sind KEIN Duplikat
 ABER: Stornos ausschliessen
 ```
@@ -312,6 +314,9 @@ ABER: Stornos ausschliessen
 | LEERER_BUCHUNGSTEXT alle Konten | Bestand/Kostenrechnung braucht keinen Buchungstext | v6.2 |
 | beleg_kreditor_days=3 | Zu grosses Zeitfenster fuer Level 2 | v6.2 |
 | fehlende_buchung_min_quote=0.3 | Zu niedrig, flaggt sporadische Konten | v6.2 |
+| RECHNUNGSDATUM_PERIODE ohne Storno-Ausschluss | Stornos haben naturgemaess Periodenabweichung -> FP | v6.2 |
+| BUCHUNGSTEXT_PERIODE ohne Storno-Ausschluss | Stornos haben naturgemaess Periodenabweichung -> FP | v6.2 |
+| NEAR_DUPLICATE same-day (0 Tage) | Soll/Haben-Gegenbuchungen + Korrekturen am selben Tag -> FP | v6.2 |
 
 ---
 

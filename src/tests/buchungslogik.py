@@ -125,6 +125,10 @@ class RechnungsdatumPeriode(AnomalyTest):
         ).abs()
         mask_inner = diff_months > 2
 
+        # Stornos ausschließen — Periodenabweichung bei Stornos ist normal
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
+        mask_inner = mask_inner & (~is_storno.loc[has_both])
+
         self.log(
             "Monats-Differenzen",
             mean_diff=round(float(diff_months[mask_inner].mean()), 1) if mask_inner.any() else 0,
@@ -160,7 +164,9 @@ class BuchungstextPeriode(AnomalyTest):
         buch_month = df["_datum"].dt.month
         buch_year  = df["_datum"].dt.year
         mismatch   = (ext_month != buch_month) | (ext_year != buch_year)
-        mask       = active & mismatch
+        # Stornos ausschließen — Periodenabweichung bei Stornos ist normal
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
+        mask       = active & mismatch & (~is_storno)
         return self._flag(df, mask)
 
 

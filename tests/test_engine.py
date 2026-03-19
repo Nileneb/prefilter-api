@@ -183,9 +183,9 @@ class TestEngineZScore:
 
 class TestEngineNearDuplicate:
     def test_counts_bookings_not_pairs(self):
-        """4 identische Buchungen → 4 Bookings flaggen, nicht 6 Paare."""
+        """4 identische Buchungen an aufeinanderfolgenden Tagen → 4 Bookings flaggen."""
         df = _make_df(
-            datum=["2024-01-15"] * 4,
+            datum=["2024-01-15", "2024-01-16", "2024-01-17", "2024-01-18"],
             betrag=["1000,00"] * 4,
             konto_soll=["4711"] * 4,
             konto_haben=["1200"] * 4,

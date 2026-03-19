@@ -211,7 +211,9 @@ class NearDuplicate(AnomalyTest):
             return
 
         diffs = dated["_datum"].diff().dt.days
-        close_mask = diffs.fillna(window + 1) <= window
+        # Same-day (0 Tage) ausschließen: Soll/Haben-Gegenbuchungen oder
+        # Korrektur+Neubuchung am selben Tag sind kein echtes Duplikat
+        close_mask = diffs.fillna(window + 1).between(1, window)
 
         # Beleg-intern: Paare mit gleicher _beleg_id überspringen
         if beleg_ids is not None:
