@@ -24,7 +24,9 @@ class BetragZscore(AnomalyTest):
     required_columns = ["_abs", "_betrag", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        has_val = df["_abs"] > 0
+        # Stornos aus Berechnung ausschließen
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
+        has_val = (df["_abs"] > 0) & (~is_storno)
         if not has_val.any():
             return self._flag(df, pd.Series(False, index=df.index))
 
@@ -52,7 +54,9 @@ class BetragIqr(AnomalyTest):
     required_columns = ["_abs", "_betrag", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        has_val = df["_abs"] > 0
+        # Stornos aus Berechnung ausschließen
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
+        has_val = (df["_abs"] > 0) & (~is_storno)
         if not has_val.any():
             return self._flag(df, pd.Series(False, index=df.index))
 
@@ -81,10 +85,12 @@ class KontoBetragAnomalie(AnomalyTest):
     required_columns = ["_abs", "_betrag", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
+        # Stornos aus Berechnung ausschließen
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
         has_konto = df["konto_soll"].astype(str).str.strip() != ""
 
         konto_stats = (
-            df.loc[has_konto & (df["_abs"] > 0)]
+            df.loc[has_konto & (df["_abs"] > 0) & (~is_storno)]
             .groupby("konto_soll", observed=True)["_abs"]
             .agg(konto_mean="mean", konto_std="std", konto_count="count")
         )
@@ -104,6 +110,7 @@ class KontoBetragAnomalie(AnomalyTest):
         )
         mask = (
             has_konto
+            & (~is_storno)
             & (df["_abs"] > 0)
             & (df["_abs"] > df_tmp["_konto_thresh"].fillna(float("inf")))
         )

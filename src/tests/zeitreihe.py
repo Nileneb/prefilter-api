@@ -22,7 +22,9 @@ class MonatsEntwicklung(AnomalyTest):
     required_columns = ["_abs", "_datum", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        has_konto_date = df["_datum"].notna() & (df["_abs"] > 0)
+        # Stornos ausschließen
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
+        has_konto_date = df["_datum"].notna() & (df["_abs"] > 0) & (~is_storno)
         subset         = df.loc[has_konto_date].copy()
 
         if len(subset) < 10:
@@ -83,9 +85,12 @@ class FehlendeMonatsbuchung(AnomalyTest):
     required_columns = ["_datum", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
+        # Stornos ausschließen
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
         has_konto_date = (
             df["_datum"].notna()
             & (df["konto_soll"].astype(str).str.strip() != "")
+            & (~is_storno)
         )
         subset = df.loc[has_konto_date].copy()
         self.log("Subset", rows_with_konto_date=len(subset), total=len(df))

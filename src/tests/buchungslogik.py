@@ -44,9 +44,15 @@ class Storno(AnomalyTest):
         )
 
         # Generalumgekehrt-Kennzeichen aus Diamant-Export
+        # Enthält DVBelegnummer des Storno-Gegenbelegs, NICHT boolean!
+        # Jeder nicht-leere/nicht-NULL Wert = STORNO
         gu = df.get("generalumgekehrt", pd.Series("", index=df.index))
-        gu = gu.astype(str).str.strip().str.lower()
-        gu_mask = gu.isin({"1", "true", "j", "ja", "yes", "x"})
+        gu_str = gu.astype(str).str.strip()
+        gu_mask = (
+            (gu_str != "")
+            & (~gu_str.str.lower().isin({"nan", "null", "none"}))
+            & (gu_str != "0")
+        )
 
         mask = hard_mask | gutschrift_mask | gu_mask
         return self._flag(df, mask)

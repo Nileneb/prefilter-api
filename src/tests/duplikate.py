@@ -87,11 +87,14 @@ class NearDuplicate(AnomalyTest):
 
         self.log("Config", window=window, max_grp=max_grp, reg_months=reg_months)
 
-        # Nullbeträge ausschließen
-        nonzero = df["_abs"] > 0
-        n_zero = int((~nonzero).sum())
-        self.log("Nullbeträge ausgeschlossen", n_zero=n_zero)
+        # Stornos und Nullbeträge ausschließen
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
+        nonzero = (df["_abs"] > 0) & (~is_storno)
+        n_zero = int((df["_abs"] <= 0).sum())
+        n_storno = int(is_storno.sum())
+        self.log("Ausgeschlossen", n_zero=n_zero, n_storno=n_storno)
         self.metric("n_zero_amounts", n_zero)
+        self.metric("n_storno_excluded", n_storno)
 
         kred = df["kreditor"].astype(str).str.strip()
         has_kred = (kred != "") & nonzero
@@ -191,9 +194,17 @@ class NearDuplicate(AnomalyTest):
     def _flag_near_window(
         grp: pd.DataFrame, window: int, flagged: set, max_grp: int
     ) -> None:
+        # Beleg-interne Zeilen (gleiche _beleg_id) nicht als Duplikat werten
+        beleg_ids = grp["_beleg_id"].astype(str) if "_beleg_id" in grp.columns else None
+
         undated = grp[grp["_datum"].isna()]
         if 2 <= len(undated) <= max_grp:
-            flagged.update(undated.index)
+            if beleg_ids is not None:
+                # Nur flaggen wenn verschiedene _beleg_ids
+                if undated.loc[undated.index, "_beleg_id"].astype(str).nunique() > 1:
+                    flagged.update(undated.index)
+            else:
+                flagged.update(undated.index)
 
         dated = grp[grp["_datum"].notna()].sort_values("_datum")
         if len(dated) < 2:
@@ -201,6 +212,14 @@ class NearDuplicate(AnomalyTest):
 
         diffs = dated["_datum"].diff().dt.days
         close_mask = diffs.fillna(window + 1) <= window
+
+        # Beleg-intern: Paare mit gleicher _beleg_id überspringen
+        if beleg_ids is not None:
+            dated_beleg = dated["_beleg_id"].astype(str)
+            prev_beleg = dated_beleg.shift(1)
+            same_beleg = dated_beleg == prev_beleg
+            close_mask = close_mask & (~same_beleg)
+
         prev_mask = close_mask.shift(-1, fill_value=False)
         flagged.update(dated.index[close_mask | prev_mask])
 
@@ -217,8 +236,11 @@ class DoppelteBelegnummer(AnomalyTest):
         prefixes = [p.strip().upper() for p in prefix_ignore_raw.split(",") if p.strip()] if prefix_ignore_raw else []
         self.log("Config", min_count=min_count, prefix_ignore=prefixes)
 
+        # Stornos ausschließen
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
+
         beleg_str = df["belegnummer"].astype(str).str.strip()
-        has_beleg = beleg_str != ""
+        has_beleg = (beleg_str != "") & (~is_storno)
 
         # Präfix-Whitelist anwenden
         if prefixes:
@@ -240,7 +262,18 @@ class DoppelteBelegnummer(AnomalyTest):
 
         sub = df.loc[has_beleg]
         group_cols = ["belegnummer", "konto_soll", "_betrag"]
-        grp_size = sub.groupby(group_cols, sort=False, observed=True).transform("size")
+
+        # Beleg-intern: Nur verschiedene _beleg_id's zählen
+        has_beleg_id = "_beleg_id" in sub.columns
+        if has_beleg_id:
+            # Zähle distinkte _beleg_id pro Gruppe
+            distinct_belege = (
+                sub.groupby(group_cols, sort=False, observed=True)["_beleg_id"]
+                .transform("nunique")
+            )
+            grp_size = distinct_belege
+        else:
+            grp_size = sub.groupby(group_cols, sort=False, observed=True).transform("size").iloc[:, 0] if isinstance(sub.groupby(group_cols, sort=False, observed=True).transform("size"), pd.DataFrame) else sub.groupby(group_cols, sort=False, observed=True).transform("size")
 
         # Soll/Haben-Paare ausschließen: S+H mit gleicher Belegnr. = Paar
         sh = df["soll_haben"].astype(str).str.strip().str.upper()
@@ -289,7 +322,10 @@ class BelegKreditorDuplikat(AnomalyTest):
 
         self.log("Config", window=window, max_grp=max_grp)
 
-        has_all = (beleg != "") & (kred != "")
+        # Stornos ausschließen
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
+
+        has_all = (beleg != "") & (kred != "") & (~is_storno)
         self.log("Buchungen mit Beleg+Kreditor", count=int(has_all.sum()))
         self.metric("rows_with_beleg_kred", int(has_all.sum()))
 
@@ -314,9 +350,16 @@ class BelegKreditorDuplikat(AnomalyTest):
         level1_regular = 0
         if has_all.any():
             sub = df.loc[has_all]
-            grp_size = sub.groupby(
+            grp_counts = sub.groupby(
                 ["belegnummer", "kreditor", "_betrag"], sort=False, observed=True
-            ).transform("size")
+            )
+            # Beleg-intern: Nur verschiedene _beleg_id's zählen
+            has_beleg_id = "_beleg_id" in sub.columns
+            if has_beleg_id:
+                grp_size = grp_counts["_beleg_id"].transform("nunique")
+            else:
+                grp_size = grp_counts.transform("size")
+                grp_size = grp_size.iloc[:, 0] if isinstance(grp_size, pd.DataFrame) else grp_size
             dup_idx = grp_size.index[grp_size >= 3]
             level1_raw = len(dup_idx)
 
@@ -339,7 +382,7 @@ class BelegKreditorDuplikat(AnomalyTest):
         self.metric("level1_flagged", level1_count)
 
         # ── Level 2: gleicher Kreditor + Betrag + Datum ≤ window ──
-        has_ka = (kred != "") & (df["_abs"] > 0) & (beleg != "")
+        has_ka = (kred != "") & (df["_abs"] > 0) & (beleg != "") & (~is_storno)
         level2_count = 0
         level2_groups = 0
         level2_skipped_size = 0
@@ -369,12 +412,16 @@ class BelegKreditorDuplikat(AnomalyTest):
             idxs  = dated.index.tolist()
             dvals = dated["_datum"].tolist()
             belege = dated["belegnummer"].astype(str).str.strip().tolist()
+            beleg_ids = dated["_beleg_id"].astype(str).tolist() if "_beleg_id" in dated.columns else None
             left = 0
             for right in range(1, len(dvals)):
                 while left < right and (dvals[right] - dvals[left]).days > window:
                     left += 1
                 for i in range(left, right):
                     if belege[i] != belege[right]:
+                        # Beleg-intern: gleiche _beleg_id = kein Duplikat
+                        if beleg_ids is not None and beleg_ids[i] == beleg_ids[right]:
+                            continue
                         before = len(flagged)
                         flagged.add(idxs[i])
                         flagged.add(idxs[right])

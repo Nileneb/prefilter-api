@@ -89,11 +89,35 @@ class AnomalyEngine:
                 df[col] = ""
         df.fillna("", inplace=True)
 
-        df["_betrag"] = parse_german_number_series(df["betrag"]).fillna(0.0).astype("float32")
+        df["_betrag"] = parse_german_number_series(df["betrag"]).fillna(0.0).astype("float64")
         df["_abs"]    = df["_betrag"].abs()
         df["_datum"]  = parse_date_series(df["datum"])
         df["_kontoklasse"] = kontoklasse(df["konto_soll"])
-        df["_betrag_signed"] = compute_signed_betrag(df).astype("float32")
+
+        # _is_storno: Generalumgekehrt (nicht-leer = Storno) ODER Buchungstext-Keywords
+        gu = df.get("generalumgekehrt", pd.Series("", index=df.index))
+        gu_str = gu.astype(str).str.strip()
+        gu_storno = (
+            (gu_str != "")
+            & (~gu_str.str.lower().isin({"nan", "null", "none"}))
+            & (gu_str != "0")
+        )
+        txt = df["buchungstext"].astype(str).str.lower()
+        txt_storno = txt.str.contains(r"storno|korrektur|r[uü]ckbuchung", regex=True, na=False)
+        df["_is_storno"] = gu_storno | txt_storno
+
+        # _beleg_id: DVBelegnummer wenn vorhanden, sonst Fallback auf belegnummer
+        if "dvbelegnummer" in df.columns:
+            dv = df["dvbelegnummer"].astype(str).str.strip()
+            has_dv = (dv != "") & (~dv.str.lower().isin({"nan", "null", "none"}))
+            if has_dv.any():
+                df["_beleg_id"] = dv
+            else:
+                df["_beleg_id"] = df["belegnummer"].astype(str).str.strip()
+        else:
+            df["_beleg_id"] = df["belegnummer"].astype(str).str.strip()
+
+        df["_betrag_signed"] = compute_signed_betrag(df).astype("float64")
         df["_score"]  = 0.0
 
         # Kategorische Spalten — beschleunigt GroupBy und spart RAM
@@ -113,7 +137,9 @@ class AnomalyEngine:
         self._log(f"Spalten: {', '.join(visible_cols)}")
 
     def _compute_stats(self) -> EngineStats:
-        vals = self.df.loc[self.df["_abs"] > 0, "_abs"]
+        # Stornos aus Statistik-Berechnung ausschließen
+        storno_mask = self.df.get("_is_storno", pd.Series(False, index=self.df.index))
+        vals = self.df.loc[(self.df["_abs"] > 0) & (~storno_mask), "_abs"]
         if len(vals) == 0:
             self._log("Beträge: keine Nicht-Null-Werte")
             return EngineStats()

@@ -1,6 +1,15 @@
-# Buchungs-Anomalie Pre-Filter v5.1
+# Buchungs-Anomalie Pre-Filter v6.0
 
-Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten entgegennimmt, 13 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
+Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) entgegennimmt, 13 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
+
+### v6.0 — Beleg-Aware Refactor
+
+- **Beleg-Ebene**: Buchungszeilen desselben Belegs (DVBelegnummer) werden als zusammengehörig erkannt; Duplikat-Tests ignorieren beleg-interne Zeilen
+- **Storno-Ausschluss**: Storno-Buchungen (Generalumgekehrt ≠ leer) werden aus 9 von 13 Tests automatisch ausgeschlossen, um False-Positives zu eliminieren
+- **Generalumgekehrt-Fix**: Das Feld enthält DVBelegnummern des Storno-Gegenbelegs (nicht boolean) — jeder nicht-leere Wert = Storno
+- **Kontoklasse Kostenrechnung**: Kontonummern ≥ 80000 werden als "Kostenrechnung" klassifiziert (statt fälschlich "Bestand")
+- **float64-Präzision**: `_betrag`/`_abs` nutzen float64 statt float32 (keine Rundungsartefakte mehr)
+- **Erweiterte Spalten-Aliase**: DVBelegnummer, DVBuchungsnummer, InterneBelegnummer, Mandant, Belegart u.a.
 
 ---
 
@@ -94,20 +103,48 @@ Die Webhook-URL kann auch direkt in der Web-UI überschrieben werden.
 
 Die Spalten werden automatisch erkannt (case-insensitive, Umlaute werden normalisiert). Es müssen nicht alle Spalten vorhanden sein, aber **`datum`** und **`betrag`** sind für sinnvolle Ergebnisse essenziell.
 
-| Kanonischer Name  | Akzeptierte Aliase                                              |
-| ----------------- | --------------------------------------------------------------- |
-| `datum`           | `datum`, `date`, `buchungsdatum`, `belegdatum`                  |
-| `betrag`          | `betrag`, `amount`, `summe`, `wert`                             |
-| `konto_soll`      | `konto_soll`, `kontosoll`, `soll`, `sollkonto`, `debit`         |
-| `konto_haben`     | `konto_haben`, `kontohaben`, `haben`, `habenkonto`, `credit`    |
-| `buchungstext`    | `buchungstext`, `text`, `beschreibung`, `verwendungszweck`      |
-| `belegnummer`     | `belegnummer`, `beleg`, `belegnr`, `beleg_nr`, `voucher`        |
-| `kostenstelle`    | `kostenstelle`, `kst`, `cost_center`                            |
-| `kreditor`        | `kreditor`, `lieferant`, `vendor`, `supplier`, `creditor`       |
-| `soll_haben`      | `soll_haben`, `sollhaben`, `s_h`, `sh`, `soll/haben`           |
+| Kanonischer Name       | Akzeptierte Aliase                                                          |
+| ---------------------- | --------------------------------------------------------------------------- |
+| `datum`                | `datum`, `date`, `buchungsdatum`, `belegdatum`                              |
+| `betrag`               | `betrag`, `amount`, `summe`, `wert`, `fibubetrag`                           |
+| `konto_soll`           | `konto_soll`, `kontosoll`, `soll`, `sollkonto`, `debit`, `kontonummer`      |
+| `konto_haben`          | `konto_haben`, `kontohaben`, `haben`, `habenkonto`, `credit`                |
+| `buchungstext`         | `buchungstext`, `text`, `beschreibung`, `verwendungszweck`                  |
+| `belegnummer`          | `belegnummer`, `beleg`, `belegnr`, `beleg_nr`, `voucher`                    |
+| `kostenstelle`         | `kostenstelle`, `kst`, `cost_center`                                        |
+| `kreditor`             | `kreditor`, `lieferant`, `vendor`, `supplier`, `creditor`, `bezeichnung`    |
+| `soll_haben`           | `soll_haben`, `sollhaben`, `s_h`, `sh`, `soll/haben`                       |
+| `dvbelegnummer`        | `dvbelegnummer`, `dv_belegnummer`, `dv_beleg_nr`                            |
+| `dvbuchungsnummer`     | `dvbuchungsnummer`, `dv_buchungsnummer`                                     |
+| `interne_belegnummer`  | `interne_belegnummer`, `internebelegnummer`, `intern_beleg`                 |
+| `generalumgekehrt`     | `generalumgekehrt`, `storno_kz`, `umkehr`                                   |
+| `klasse`               | `klasse`, `class`                                                           |
+| `buchungsperiode`      | `buchungsperiode`, `periode`, `period`                                      |
+| `erfassungsdatum`      | `erfassungsdatum`, `erfassungam`, `erfassung_am`, `created_at`              |
+| `belegart`             | `belegart`, `beleg_art`                                                     |
+| `mandant`              | `mandant`, `firma`, `mandanten_nr`                                          |
+| `detailbetrag`         | `detailbetrag`, `detail_betrag`                                             |
 
 - **Beträge**: Deutsche (`1.234,56`) und englische (`1,234.56`) Formate werden unterstützt.
 - **Datumsformate**: `YYYY-MM-DD`, `DD.MM.YYYY`, `DD.MM.YY` und weitere gängige Formate.
+
+### Diamant-Beleg-Struktur
+
+Die Eingabedaten stammen typischerweise aus Diamant/4 Finanzbuchhaltung. Jede Zeile ist eine **Buchungszeile** (nicht ein Beleg). Ein Beleg (DVBelegnummer) besteht aus mindestens 2 Zeilen (Soll + Haben = doppelte Buchführung). Splitbuchungen erzeugen >2 Zeilen pro Beleg.
+
+- **DVBelegnummer**: Gruppiert Zeilen zu einem Beleg (interne ID)
+- **Belegnummer**: Externe Rechnungsnummer — kommt natürlich mehrfach vor (min. 2× pro Beleg)
+- **Generalumgekehrt**: Enthält die DVBelegnummer des Storno-**Gegenbelegs** (nicht Ja/Nein!)
+- **Klasse**: K=Kreditor, D=Debitor, S=Sachkonto
+
+### Kontoklassen (src/accounting.py)
+
+| Kontoklasse        | Bereich       |
+| ------------------ | ------------- |
+| Bestand            | 0 – 39 999   |
+| Ertrag             | 40 000 – 59 999 |
+| Aufwand            | 60 000 – 79 999 |
+| Kostenrechnung     | ≥ 80 000     |
 
 ---
 
@@ -251,7 +288,7 @@ prefilter-api/
 │   ├── worker.py        # Celery Task (Redis-Backend)
 │   └── tests/           # Test-Module (betrag, duplikate, buchungslogik, …)
 └── tests/
-    ├── test_engine.py       # 51 Unit-Tests
+    ├── test_engine.py       # 100 Unit-Tests
     ├── test_performance.py  # 500k-Zeilen Benchmark (@pytest.mark.slow)
     └── test_integration.py  # FastAPI+Redis E2E (@pytest.mark.integration)
 ```

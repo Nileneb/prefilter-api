@@ -230,7 +230,7 @@ class TestEngineStorno:
 
 class TestEngineDoppelteBelegnummer:
     def test_duplicate_flagged(self):
-        """5+ Zeilen mit gleicher Belegnr + Konto + Betrag → flaggen."""
+        """5+ Zeilen mit gleicher Belegnr + Konto + Betrag aber verschiedene Belege → flaggen."""
         df = _make_df(
             datum=["2024-01-15", "2024-01-16", "2024-01-17", "2024-01-18", "2024-01-19"],
             betrag=["100,00", "100,00", "100,00", "100,00", "100,00"],
@@ -239,6 +239,7 @@ class TestEngineDoppelteBelegnummer:
             konto_haben=["1200", "1200", "1200", "1200", "1200"],
             buchungstext=["A", "B", "C", "D", "E"],
             erfasser=["User", "User", "User", "User", "User"],
+            dvbelegnummer=["DV-1", "DV-2", "DV-3", "DV-4", "DV-5"],
         )
         engine = AnomalyEngine(df)
         engine._stats()
@@ -263,7 +264,7 @@ class TestEngineDoppelteBelegnummer:
 
 class TestEngineBelegKreditorDuplikat:
     def test_same_beleg_same_kreditor(self):
-        """Gleiche Belegnr. + gleicher Kreditor + gleicher Betrag (>=3) → flaggen."""
+        """Gleiche Belegnr. + gleicher Kreditor + gleicher Betrag (>=3, verschiedene Belege) → flaggen."""
         df = _make_df(
             datum=["2024-01-15", "2024-01-16", "2024-01-17"],
             betrag=["500,00", "500,00", "500,00"],
@@ -273,6 +274,7 @@ class TestEngineBelegKreditorDuplikat:
             konto_haben=["1200", "1200", "1200"],
             buchungstext=["Einkauf", "Einkauf 2", "Einkauf 3"],
             erfasser=["User", "User", "User"],
+            dvbelegnummer=["DV-10", "DV-11", "DV-12"],
         )
         engine = AnomalyEngine(df)
         engine._stats()
@@ -1001,3 +1003,336 @@ class TestOutputStatistics:
         assert "total_suspicious" in stats
         assert "total_output" in stats
         assert stats["total_suspicious"] >= stats["total_output"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v6.0 — Beleg-Aware Refactor Tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIsStorno:
+    """_is_storno column computed correctly in _prepare()."""
+
+    def test_generalumgekehrt_dvbelegnummer_is_storno(self):
+        """generalumgekehrt='15968' (DVBelegnummer) → _is_storno=True."""
+        df = _make_df(
+            betrag=["500,00"],
+            buchungstext=["Normaler Text"],
+            generalumgekehrt=["15968"],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_is_storno"].iloc[0] is True or engine.df["_is_storno"].iloc[0] == True
+
+    def test_generalumgekehrt_empty_not_storno(self):
+        """generalumgekehrt='' → _is_storno=False."""
+        df = _make_df(
+            betrag=["500,00"],
+            buchungstext=["Normaler Text"],
+            generalumgekehrt=[""],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_is_storno"].iloc[0] == False
+
+    def test_generalumgekehrt_null_not_storno(self):
+        """generalumgekehrt='NULL' → _is_storno=False."""
+        df = _make_df(
+            betrag=["500,00"],
+            buchungstext=["Normaler Text"],
+            generalumgekehrt=["NULL"],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_is_storno"].iloc[0] == False
+
+    def test_generalumgekehrt_nan_not_storno(self):
+        """generalumgekehrt='nan' → _is_storno=False."""
+        df = _make_df(
+            betrag=["500,00"],
+            buchungstext=["Normaler Text"],
+            generalumgekehrt=["nan"],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_is_storno"].iloc[0] == False
+
+    def test_generalumgekehrt_zero_not_storno(self):
+        """generalumgekehrt='0' → _is_storno=False."""
+        df = _make_df(
+            betrag=["500,00"],
+            buchungstext=["Normaler Text"],
+            generalumgekehrt=["0"],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_is_storno"].iloc[0] == False
+
+    def test_text_storno_keyword_is_storno(self):
+        """buchungstext='Storno Rechnung 123' → _is_storno=True."""
+        df = _make_df(
+            betrag=["50,00"],
+            buchungstext=["Storno Rechnung 123"],
+            generalumgekehrt=[""],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_is_storno"].iloc[0] == True
+
+    def test_normal_text_no_gu_not_storno(self):
+        """buchungstext='Normale Buchung' + generalumgekehrt='' → _is_storno=False."""
+        df = _make_df(
+            betrag=["100,00"],
+            buchungstext=["Normale Buchung"],
+            generalumgekehrt=[""],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_is_storno"].iloc[0] == False
+
+    def test_generalumgekehrt_float_string_is_storno(self):
+        """generalumgekehrt='15968.0' (float-parsed DVBelegnummer) → _is_storno=True."""
+        df = _make_df(
+            betrag=["500,00"],
+            buchungstext=["Normaler Text"],
+            generalumgekehrt=["15968.0"],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_is_storno"].iloc[0] == True
+
+
+class TestBelegId:
+    """_beleg_id column uses dvbelegnummer when available."""
+
+    def test_beleg_id_from_dvbelegnummer(self):
+        """dvbelegnummer vorhanden → _beleg_id = dvbelegnummer."""
+        df = _make_df(
+            betrag=["100,00"],
+            dvbelegnummer=["DV-12345"],
+            belegnummer=["EXT-001"],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_beleg_id"].iloc[0] == "DV-12345"
+
+    def test_beleg_id_fallback_to_belegnummer(self):
+        """dvbelegnummer leer → _beleg_id = belegnummer."""
+        df = _make_df(
+            betrag=["100,00"],
+            dvbelegnummer=[""],
+            belegnummer=["EXT-001"],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_beleg_id"].iloc[0] == "EXT-001"
+
+    def test_beleg_id_no_dvbelegnummer_column(self):
+        """Kein dvbelegnummer im DataFrame → _beleg_id = belegnummer."""
+        df = _make_df(
+            betrag=["100,00"],
+            belegnummer=["EXT-002"],
+        )
+        engine = AnomalyEngine(df)
+        assert engine.df["_beleg_id"].iloc[0] == "EXT-002"
+
+
+class TestBelegInternExclusion:
+    """Beleg-interne Zeilen werden nicht als Duplikat gezählt."""
+
+    def test_same_beleg_id_not_near_duplicate(self):
+        """2 Zeilen mit gleicher _beleg_id + gleichem Betrag → KEIN NEAR_DUPLICATE."""
+        df = _make_df(
+            datum=["2024-01-15", "2024-01-15"],
+            betrag=["1000,00", "1000,00"],
+            konto_soll=["4711", "4711"],
+            konto_haben=["1200", "1200"],
+            buchungstext=["Soll", "Haben"],
+            belegnummer=["001", "001"],
+            kreditor=["Lieferant X", "Lieferant X"],
+            dvbelegnummer=["DV-100", "DV-100"],  # gleicher Beleg
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t06_near_duplicate()
+        assert engine.flag_counts["NEAR_DUPLICATE"] == 0
+
+    def test_different_beleg_id_near_duplicate(self):
+        """2 Zeilen mit VERSCHIEDENER _beleg_id + gleichem Betrag + Datum ≤ 3d → NEAR_DUPLICATE."""
+        df = _make_df(
+            datum=["2024-01-15", "2024-01-16"],
+            betrag=["1000,00", "1000,00"],
+            konto_soll=["4711", "4711"],
+            konto_haben=["1200", "1200"],
+            buchungstext=["Rechnung", "Rechnung"],
+            belegnummer=["001", "001"],
+            kreditor=["Lieferant X", "Lieferant X"],
+            dvbelegnummer=["DV-100", "DV-200"],  # verschiedene Belege
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t06_near_duplicate()
+        assert engine.flag_counts["NEAR_DUPLICATE"] == 2
+
+    def test_same_beleg_id_not_doppelte_belegnummer(self):
+        """5 Zeilen gleiche Belegnummer, aber alle gleiche _beleg_id → KEIN DOPPELTE_BELEGNUMMER."""
+        df = _make_df(
+            datum=["2024-01-15"] * 5,
+            betrag=["100,00"] * 5,
+            belegnummer=["001"] * 5,
+            konto_soll=["4711"] * 5,
+            konto_haben=["1200"] * 5,
+            buchungstext=["A", "B", "C", "D", "E"],
+            dvbelegnummer=["DV-100"] * 5,  # gleicher Beleg = beleg-intern
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t13_doppelte_belegnummer()
+        assert engine.flag_counts["DOPPELTE_BELEGNUMMER"] == 0
+
+    def test_different_beleg_id_doppelte_belegnummer(self):
+        """5 Zeilen gleiche Belegnummer, verschiedene _beleg_id → DOPPELTE_BELEGNUMMER."""
+        df = _make_df(
+            datum=["2024-01-15"] * 5,
+            betrag=["100,00"] * 5,
+            belegnummer=["001"] * 5,
+            konto_soll=["4711"] * 5,
+            konto_haben=["1200"] * 5,
+            buchungstext=["A", "B", "C", "D", "E"],
+            dvbelegnummer=["DV-1", "DV-2", "DV-3", "DV-4", "DV-5"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t13_doppelte_belegnummer()
+        assert engine.flag_counts["DOPPELTE_BELEGNUMMER"] == 5
+
+
+class TestStornoExclusion:
+    """Storno-Buchungen werden aus relevanten Tests ausgeschlossen."""
+
+    def test_storno_not_betrag_zscore(self):
+        """Storno mit hohem Betrag wird NICHT als BETRAG_ZSCORE geflaggt."""
+        betraege = ["100,00"] * 99 + ["100000,00"]
+        df = _make_df(
+            datum=["2024-01-15"] * 100,
+            betrag=betraege,
+            konto_soll=["4711"] * 100,
+            konto_haben=["1200"] * 100,
+            buchungstext=["Normal"] * 99 + ["Storno hoher Betrag"],
+            belegnummer=[f"{i:04d}" for i in range(100)],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t01_zscore()
+        # Die Storno-Zeile (letzte) darf NICHT BETRAG_ZSCORE bekommen
+        assert not engine.df.iloc[-1]["flag_BETRAG_ZSCORE"]
+
+    def test_storno_not_near_duplicate(self):
+        """Storno-Buchung wird NICHT als NEAR_DUPLICATE geflaggt."""
+        df = _make_df(
+            datum=["2024-01-15", "2024-01-15"],
+            betrag=["1000,00", "1000,00"],
+            konto_soll=["4711", "4711"],
+            kreditor=["Lieferant X", "Lieferant X"],
+            buchungstext=["Original", "Storno Buchung"],
+            belegnummer=["001", "002"],
+            dvbelegnummer=["DV-1", "DV-2"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t06_near_duplicate()
+        # Die Storno-Zeile (index 1) darf nicht geflaggt werden
+        assert not engine.df.iloc[1].get("flag_NEAR_DUPLICATE", False)
+
+    def test_storno_not_doppelte_belegnummer(self):
+        """Storno-Buchungen werden aus DOPPELTE_BELEGNUMMER ausgeschlossen."""
+        df = _make_df(
+            datum=["2024-01-15"] * 5,
+            betrag=["100,00"] * 5,
+            belegnummer=["001"] * 5,
+            konto_soll=["4711"] * 5,
+            buchungstext=["Normal"] * 4 + ["Storno"],
+            dvbelegnummer=["DV-1", "DV-2", "DV-3", "DV-4", "DV-5"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t13_doppelte_belegnummer()
+        # Storno-Zeile sollte nicht gezählt werden → nur 4 verschiedene Belege
+        assert not engine.df.iloc[-1].get("flag_DOPPELTE_BELEGNUMMER", False)
+
+
+class TestKontoklasseKostenrechnung:
+    """Kontoklasse 'Kostenrechnung' für Kontonummern >= 80000."""
+
+    def test_kostenrechnung_820000(self):
+        """Kontonummer 820000 → Kontoklasse 'Kostenrechnung'."""
+        from src.accounting import kontoklasse
+        result = kontoklasse(pd.Series([820000]))
+        assert result.iloc[0] == "Kostenrechnung"
+
+    def test_kostenrechnung_80000(self):
+        """Kontonummer 80000 → Kontoklasse 'Kostenrechnung'."""
+        from src.accounting import kontoklasse
+        result = kontoklasse(pd.Series([80000]))
+        assert result.iloc[0] == "Kostenrechnung"
+
+    def test_aufwand_79999_still_aufwand(self):
+        """Kontonummer 79999 → Kontoklasse 'Aufwand' (nicht Kostenrechnung)."""
+        from src.accounting import kontoklasse
+        result = kontoklasse(pd.Series([79999]))
+        assert result.iloc[0] == "Aufwand"
+
+    def test_bestand_low_still_bestand(self):
+        """Kontonummer 1200 → Kontoklasse 'Bestand'."""
+        from src.accounting import kontoklasse
+        result = kontoklasse(pd.Series([1200]))
+        assert result.iloc[0] == "Bestand"
+
+    def test_engine_separates_kostenrechnung_stats(self):
+        """Kostenrechnung-Konten werden in eigener Klasse berechnet."""
+        df = _make_df(
+            datum=["2024-01-15"] * 10,
+            betrag=["100,00"] * 10,
+            konto_soll=["820000"] * 10,
+        )
+        engine = AnomalyEngine(df)
+        # Kontoklasse muss "Kostenrechnung" sein
+        assert (engine.df["_kontoklasse"] == "Kostenrechnung").all()
+
+
+class TestFloat64Precision:
+    """float64 statt float32 für _betrag/_abs."""
+
+    def test_no_float32_artifacts(self):
+        """Betrag -56710.33 wird korrekt geparst (nicht -56710.328125)."""
+        df = _make_df(betrag=["-56.710,33"])
+        engine = AnomalyEngine(df)
+        assert engine.df["_betrag"].iloc[0] == -56710.33
+
+    def test_large_amount_precision(self):
+        """Große Beträge behalten volle Präzision."""
+        df = _make_df(betrag=["-93.669,29"])
+        engine = AnomalyEngine(df)
+        assert engine.df["_betrag"].iloc[0] == -93669.29
+
+
+class TestDiamantColumnAliasesV6:
+    """Neue v6.0 COLUMN_ALIASES werden korrekt gemappt."""
+
+    def test_dvbelegnummer_mapped(self):
+        """DVBelegnummer → dvbelegnummer."""
+        df = pd.DataFrame({
+            "DVBelegnummer": ["12345"],
+            "Buchungstext": ["Test"],
+            "FiBuBetrag": ["100"],
+        })
+        mapped = map_columns(df)
+        assert "dvbelegnummer" in mapped.columns
+
+    def test_dvbuchungsnummer_mapped(self):
+        """DVBuchungsnummer → dvbuchungsnummer."""
+        df = pd.DataFrame({
+            "DVBuchungsnummer": ["67890"],
+            "Buchungstext": ["Test"],
+        })
+        mapped = map_columns(df)
+        assert "dvbuchungsnummer" in mapped.columns
+
+    def test_mandant_mapped(self):
+        """Mandant → mandant."""
+        df = pd.DataFrame({
+            "Mandant": ["150"],
+            "Buchungstext": ["Test"],
+        })
+        mapped = map_columns(df)
+        assert "mandant" in mapped.columns

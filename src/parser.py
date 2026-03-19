@@ -50,15 +50,19 @@ COLUMN_ALIASES = {
                          "bezeichnung"],
     # ── Diamant-Spalten ──────────────────────────────────────
     "soll_haben":       ["soll_haben", "sollhaben", "s_h", "sh", "soll/haben"],
-    "klasse":           ["klasse"],
-    "belegart":         ["belegart"],
-    "buchungsperiode":  ["buchungsperiode"],
+    "klasse":           ["klasse", "class"],
+    "belegart":         ["belegart", "beleg_art"],
+    "buchungsperiode":  ["buchungsperiode", "periode", "period"],
     "erfassungsdatum":  ["erfassungsdatum", "erfassungam", "erfassung_am", "created_at"],
     "kostentraeger":    ["kostentraeger", "kostentraeger"],
     "projekt":          ["projekt", "project"],
     "steuerschluessel": ["steuerschluessel", "steuerschluessel"],
-    "detailbetrag":     ["detailbetrag"],
-    "generalumgekehrt": ["generalumgekehrt"],
+    "detailbetrag":     ["detailbetrag", "detail_betrag"],
+    "generalumgekehrt": ["generalumgekehrt", "storno_kz", "umkehr"],
+    "dvbelegnummer":    ["dvbelegnummer", "dv_belegnummer", "dv_beleg_nr"],
+    "dvbuchungsnummer": ["dvbuchungsnummer", "dv_buchungsnummer"],
+    "interne_belegnummer": ["interne_belegnummer", "internebelegnummer", "intern_beleg"],
+    "mandant":          ["mandant", "firma", "mandanten_nr"],
 }
 
 

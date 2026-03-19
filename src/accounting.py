@@ -5,16 +5,17 @@ Buchungs-Anomalie Pre-Filter — Kontoklassen & Vorzeichen-Logik
 Vorzeichen-Berechnung. Alle anderen Dateien importieren von hier.
 
 Kontoklassen:
-    Ertrag:  40000–59999
-    Aufwand: 60000–79999
-    Bestand: 0–39999
+    Ertrag:           40000–59999
+    Aufwand:          60000–79999
+    Kostenrechnung:   80000–99999
+    Bestand:          0–39999
 
 Soll/Haben-Vorzeichen:
     Ertrag + Haben → +abs  (normaler Ertrag)
     Ertrag + Soll  → −abs  (Erlösschmälerung)
     Aufwand + Soll → +abs  (normaler Aufwand)
     Aufwand + Haben → −abs (Aufwandsminderung)
-    Bestand         → Originalvorzeichen aus _betrag
+    Bestand / Kostenrechnung → Originalvorzeichen aus _betrag
 """
 
 from __future__ import annotations
@@ -27,12 +28,14 @@ ERTRAG_MIN = 40000
 ERTRAG_MAX = 59999
 AUFWAND_MIN = 60000
 AUFWAND_MAX = 79999
+KOSTENRECHNUNG_MIN = 80000
 
 
 def kontoklasse(konto_soll: pd.Series) -> pd.Series:
     """Bestimmt Kontoklasse aus der Kontonummer.
 
-    Ertrag: 40000–59999, Aufwand: 60000–79999, Bestand: 0–39999
+    Ertrag: 40000–59999, Aufwand: 60000–79999,
+    Kostenrechnung: >= 80000, Bestand: 0–39999
     """
     num = pd.to_numeric(
         konto_soll.astype(str).str.strip().str.replace(r"\D", "", regex=True),
@@ -41,6 +44,7 @@ def kontoklasse(konto_soll: pd.Series) -> pd.Series:
     klasse = pd.Series("Bestand", index=konto_soll.index)
     klasse = klasse.where(~((num >= ERTRAG_MIN) & (num <= ERTRAG_MAX)), "Ertrag")
     klasse = klasse.where(~((num >= AUFWAND_MIN) & (num <= AUFWAND_MAX)), "Aufwand")
+    klasse = klasse.where(~(num >= KOSTENRECHNUNG_MIN), "Kostenrechnung")
     return klasse
 
 

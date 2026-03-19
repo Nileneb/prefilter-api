@@ -21,7 +21,9 @@ class NeuerKreditorHoch(AnomalyTest):
     required_columns = ["_abs", "kreditor"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        has_kred = df["kreditor"].astype(str).str.strip() != ""
+        # Stornos ausschließen
+        is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
+        has_kred = (df["kreditor"].astype(str).str.strip() != "") & (~is_storno)
         kred_cnt = df.loc[has_kred, "kreditor"].value_counts()
         schwelle = (
             stats.b_mean + config.new_kreditor_amount_sigma * stats.b_std
