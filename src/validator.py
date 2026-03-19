@@ -20,15 +20,14 @@ import pandas as pd
 TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
     "BETRAG_ZSCORE":          {"required": ["betrag"],   "optional": ["konto_soll"]},
     "BETRAG_IQR":             {"required": ["betrag"],   "optional": ["konto_soll"]},
-    "KONTO_BETRAG_ANOMALIE":  {"required": ["betrag"],   "optional": ["konto_soll", "konto_haben"]},
+    "KONTO_BETRAG_ANOMALIE":  {"required": ["betrag"],   "optional": ["konto_soll"]},
     "NEAR_DUPLICATE":         {"required": ["kreditor", "betrag"],
-                               "optional": ["buchungstext", "konto_haben", "konto_soll", "datum"]},
+                               "optional": ["buchungstext", "konto_soll", "datum", "soll_haben"]},
     "DOPPELTE_BELEGNUMMER":   {"required": ["belegnummer"]},
     "BELEG_KREDITOR_DUPLIKAT": {"required": ["belegnummer", "kreditor", "betrag"]},
     "STORNO":                 {"required": ["betrag"],   "optional": ["buchungstext", "generalumgekehrt"]},
     "NEUER_KREDITOR_HOCH":    {"required": ["kreditor", "betrag", "datum"]},
     "LEERER_BUCHUNGSTEXT":    {"required": ["buchungstext"]},
-    "VELOCITY_ANOMALIE":      {"required": ["erfasser", "datum"]},
     "RECHNUNGSDATUM_PERIODE": {"required": ["datum"],
                                "optional": ["erfassungsdatum", "buchungsperiode"]},
     "BUCHUNGSTEXT_PERIODE":   {"required": ["buchungstext", "datum"]},
@@ -36,7 +35,7 @@ TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
     "FEHLENDE_MONATSBUCHUNG": {"required": ["datum"],     "optional": ["konto_soll"]},
 }
 
-# ── Alle 14 Tests in UI-Reihenfolge ─────────────────────────────────────────
+# ── Alle 13 Tests in UI-Reihenfolge ─────────────────────────────────────────
 
 ALL_TEST_NAMES: list[str] = list(TEST_REQUIREMENTS.keys())
 
@@ -45,7 +44,7 @@ TEST_CATEGORIES: dict[str, list[str]] = {
     "Betrags-Tests": ["BETRAG_ZSCORE", "BETRAG_IQR", "KONTO_BETRAG_ANOMALIE"],
     "Duplikat-Tests": ["NEAR_DUPLICATE", "DOPPELTE_BELEGNUMMER", "BELEG_KREDITOR_DUPLIKAT"],
     "Buchungslogik": ["STORNO", "LEERER_BUCHUNGSTEXT", "RECHNUNGSDATUM_PERIODE", "BUCHUNGSTEXT_PERIODE"],
-    "Kreditor-Tests": ["NEUER_KREDITOR_HOCH", "VELOCITY_ANOMALIE"],
+    "Kreditor-Tests": ["NEUER_KREDITOR_HOCH"],
     "Zeitreihen-Tests": ["MONATS_ENTWICKLUNG", "FEHLENDE_MONATSBUCHUNG"],
 }
 

@@ -246,15 +246,14 @@ class TestEngineDoppelteBelegnummer:
         assert engine.flag_counts["DOPPELTE_BELEGNUMMER"] == 5
 
     def test_soll_haben_pair_not_flagged(self):
-        """Soll/Haben-Paar mit gleicher Belegnr aber verschiedenen Konten → NICHT flaggen."""
+        """Soll/Haben-Paar mit gleicher Belegnr + soll_haben S/H → NICHT flaggen."""
         df = _make_df(
             datum=["2024-01-15", "2024-01-15"],
             betrag=["500,00", "500,00"],
             belegnummer=["RE-001", "RE-001"],
-            konto_soll=["6000", "1200"],
-            konto_haben=["1200", "6000"],
+            konto_soll=["6000", "6000"],
+            soll_haben=["S", "H"],
             buchungstext=["Aufwand", "Gegenbuchung"],
-            erfasser=["User", "User"],
         )
         engine = AnomalyEngine(df)
         engine._stats()
@@ -345,37 +344,7 @@ class TestEngineLeererBuchungstext:
         assert engine.flag_counts["LEERER_BUCHUNGSTEXT"] == 0
 
 
-class TestEngineVelocityAnomalie:
-    def test_spike_flagged(self):
-        """Kreditor mit plötzlichem Monats-Spike → flaggen."""
-        dates     = []
-        kreditors = []
-        erfassers = []
-        for m in range(1, 6):
-            for _ in range(2):
-                dates.append(f"2024-{m:02d}-15")
-                kreditors.append("Lieferant X")
-                erfassers.append("UserA" if m % 2 == 0 else "UserB")
-        for _ in range(10):
-            dates.append("2024-06-15")
-            kreditors.append("Lieferant X")
-            erfassers.append("UserA")
 
-        n  = len(dates)
-        df = _make_df(
-            datum=dates,
-            betrag=["100,00"] * n,
-            konto_soll=["4711"] * n,
-            konto_haben=["1200"] * n,
-            buchungstext=["Bestellung"] * n,
-            belegnummer=[f"{i:04d}" for i in range(n)],
-            kreditor=kreditors,
-            erfasser=erfassers,
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t22_velocity_anomalie()
-        assert engine.flag_counts["VELOCITY_ANOMALIE"] >= 1
 
 
 # ── Phase-2-Tests ─────────────────────────────────────────────────────────────
@@ -727,15 +696,13 @@ class TestEngineFullRun:
         assert result["statistics"]["total_input"] == 0
 
     def test_all_test_methods_called(self):
-        """Alle 14 Tests liefern einen flag_counts-Eintrag."""
+        """Alle 13 Tests liefern einen flag_counts-Eintrag."""
         df = _make_df(
             datum=["2024-01-15"] * 10,
             betrag=[f"{i * 100}" for i in range(1, 11)],
             konto_soll=["4711"] * 10,
-            konto_haben=["1200"] * 10,
             buchungstext=[f"Buchung {i}" for i in range(10)],
             belegnummer=[f"{i:04d}" for i in range(10)],
-            erfasser=["User"] * 10,
         )
         engine  = AnomalyEngine(df)
         result  = engine.run()
@@ -745,7 +712,7 @@ class TestEngineFullRun:
             "BETRAG_ZSCORE", "BETRAG_IQR", "NEAR_DUPLICATE",
             "DOPPELTE_BELEGNUMMER", "BELEG_KREDITOR_DUPLIKAT",
             "STORNO", "NEUER_KREDITOR_HOCH", "KONTO_BETRAG_ANOMALIE",
-            "LEERER_BUCHUNGSTEXT", "VELOCITY_ANOMALIE",
+            "LEERER_BUCHUNGSTEXT",
             "RECHNUNGSDATUM_PERIODE", "BUCHUNGSTEXT_PERIODE",
             "MONATS_ENTWICKLUNG", "FEHLENDE_MONATSBUCHUNG",
         }

@@ -85,12 +85,7 @@ class NearDuplicate(AnomalyTest):
         max_grp = config.near_duplicate_max_group_size
         reg_months = config.near_duplicate_regular_months
 
-        # konto_haben optional: nur einbeziehen wenn befüllt
-        kh = df["konto_haben"].astype(str).str.strip() if "konto_haben" in df.columns else pd.Series("", index=df.index)
-        has_konto_haben = (kh != "").any()
-
-        self.log("Config", window=window, max_grp=max_grp, reg_months=reg_months,
-                 konto_haben_verfuegbar=has_konto_haben)
+        self.log("Config", window=window, max_grp=max_grp, reg_months=reg_months)
 
         # Nullbeträge ausschließen
         nonzero = df["_abs"] > 0
@@ -111,8 +106,6 @@ class NearDuplicate(AnomalyTest):
 
         # ── MIT Kreditor ──
         kred_group_cols = ["_abs", "konto_soll", "kreditor"]
-        if has_konto_haben:
-            kred_group_cols.insert(2, "konto_haben")
         regular_kred = _find_regular_keys(
             df[has_kred], kred_group_cols,
             reg_months, logger=self.log, label="kred",
@@ -152,8 +145,6 @@ class NearDuplicate(AnomalyTest):
 
         # ── OHNE Kreditor ──
         nokred_group_cols = ["_abs", "konto_soll", "buchungstext"]
-        if has_konto_haben:
-            nokred_group_cols.insert(2, "konto_haben")
         regular_nokred = _find_regular_keys(
             df[no_kred], nokred_group_cols,
             reg_months, logger=self.log, label="no_kred",
@@ -218,7 +209,7 @@ class DoppelteBelegnummer(AnomalyTest):
     name = "DOPPELTE_BELEGNUMMER"
     weight = 2.0
     critical = True
-    required_columns = ["_betrag", "belegnummer", "konto_soll", "konto_haben"]
+    required_columns = ["_betrag", "belegnummer", "konto_soll"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         min_count = getattr(config, "doppelte_beleg_min_count", 3)
@@ -248,8 +239,21 @@ class DoppelteBelegnummer(AnomalyTest):
             return 0
 
         sub = df.loc[has_beleg]
-        group_cols = ["belegnummer", "konto_soll", "konto_haben", "_betrag"]
+        group_cols = ["belegnummer", "konto_soll", "_betrag"]
         grp_size = sub.groupby(group_cols, sort=False, observed=True).transform("size")
+
+        # Soll/Haben-Paare ausschließen: S+H mit gleicher Belegnr. = Paar
+        sh = df["soll_haben"].astype(str).str.strip().str.upper()
+        has_sh = sh.isin(["S", "SOLL", "H", "HABEN"])
+        if has_sh.any():
+            is_soll = sh.isin(["S", "SOLL"])
+            for beleg_val, grp in sub.groupby("belegnummer", sort=False, observed=True):
+                if len(grp) == 2:
+                    idx = grp.index
+                    if has_sh.loc[idx].all():
+                        soll_count = is_soll.loc[idx].sum()
+                        if soll_count == 1:  # Genau 1 Soll + 1 Haben = Paar
+                            grp_size.loc[idx] = 0  # Nicht als Duplikat zählen
 
         # Verteilung loggen
         for threshold in [2, 3, 4, 5, 10]:

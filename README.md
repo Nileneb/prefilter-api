@@ -1,6 +1,6 @@
-# Buchungs-Anomalie Pre-Filter v4.1
+# Buchungs-Anomalie Pre-Filter v5.1
 
-Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten entgegennimmt, 14 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
+Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten entgegennimmt, 13 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
 
 ---
 
@@ -76,7 +76,7 @@ Die Webhook-URL kann auch direkt in der Web-UI überschrieben werden.
 4. Ergebnis in drei Tabs:
    - **Ergebnis** — Zusammenfassung mit Top-3 verdächtigen Buchungen
    - **Verdächtige Buchungen** — Sortierbare Tabelle aller Treffer (Score ≥ 2.0)
-   - **Logs** — Detaillierte Engine-Logs aller 14 Tests
+   - **Logs** — Detaillierte Engine-Logs aller 13 Tests
 
 ---
 
@@ -104,8 +104,7 @@ Die Spalten werden automatisch erkannt (case-insensitive, Umlaute werden normali
 | `belegnummer`     | `belegnummer`, `beleg`, `belegnr`, `beleg_nr`, `voucher`        |
 | `kostenstelle`    | `kostenstelle`, `kst`, `cost_center`                            |
 | `kreditor`        | `kreditor`, `lieferant`, `vendor`, `supplier`, `creditor`       |
-| `erfasser`        | `erfasser`, `user`, `benutzer`, `ersteller`, `created_by`       |
-| `rechnungsdatum`  | `rechnungsdatum`, `invoice_date`, `rech_datum`, `invoicedate`   |
+| `soll_haben`      | `soll_haben`, `sollhaben`, `s_h`, `sh`, `soll/haben`           |
 
 - **Beträge**: Deutsche (`1.234,56`) und englische (`1,234.56`) Formate werden unterstützt.
 - **Datumsformate**: `YYYY-MM-DD`, `DD.MM.YYYY`, `DD.MM.YY` und weitere gängige Formate.
@@ -142,14 +141,14 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
       "belegnummer": "RE-2025-0042",
       "kostenstelle": "100",
       "kreditor": "Lieferant GmbH",
-      "erfasser": "m.mueller",
+      "soll_haben": "S",
       "anomaly_score": 7.5,
       "anomaly_flags": "BETRAG_ZSCORE|NEAR_DUPLICATE|NEUER_KREDITOR_HOCH"
     }
   ],
   "logs": [
     "Geladen: 500 Buchungen",
-    "[01/14] BETRAG_ZSCORE: 5"
+    "[01/13] BETRAG_ZSCORE: 5"
   ]
 }
 ```
@@ -166,30 +165,29 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 | `belegnummer`    | `string` | Belegnummer                                                |
 | `kostenstelle`   | `string` | Kostenstelle                                               |
 | `kreditor`       | `string` | Kreditor / Lieferant                                       |
-| `erfasser`       | `string` | Buchungserfasser                                           |
+| `soll_haben`     | `string` | Soll/Haben-Kennzeichen (S/H)                               |
 | `anomaly_score`  | `float`  | Gewichteter Anomalie-Score (Summe aller Flag-Gewichte)     |
 | `anomaly_flags`  | `string` | Pipe-getrennte Liste der ausgelösten Anomalie-Flags        |
 
 ---
 
-## Anomalie-Tests (14 Stück)
+## Anomalie-Tests (13 Stück)
 
 | #  | Flag                      | Gewicht | Kritisch | Beschreibung                                                               |
 | -- | ------------------------- | ------- | -------- | -------------------------------------------------------------------------- |
-| 01 | `BETRAG_ZSCORE`           | 2.0     | ✓        | Betrag > 2,5 Standardabweichungen vom Mittelwert                          |
-| 02 | `BETRAG_IQR`              | 1.5     |          | Betrag oberhalb des IQR-Fence (Q3 + 1,5 × IQR)                           |
-| 03 | `NEAR_DUPLICATE`          | 2.0     | ✓        | Gleicher Betrag + Konten, Buchungsdatum innerhalb von 3 Tagen             |
-| 04 | `DOPPELTE_BELEGNUMMER`    | 2.0     | ✓        | Gleiche Belegnummer taucht mehrfach auf                                   |
-| 05 | `BELEG_KREDITOR_DUPLIKAT` | 2.5     | ✓        | Gleiche Belegnummer + gleicher Kreditor (mögliche doppelte Zahlung)        |
-| 06 | `STORNO`                  | 1.5     | ✓        | Buchungstext enthält Storno/Korrektur/Rückbuchung oder negativer Betrag   |
-| 07 | `NEUER_KREDITOR_HOCH`     | 2.5     | ✓        | Kreditor mit ≤ 2 Buchungen und hohem Betrag (> μ + 1,5σ)                 |
-| 08 | `KONTO_BETRAG_ANOMALIE`   | 2.0     | ✓        | Betrag ist Ausreißer relativ zur Kontonorm (Z-Score auf Kontoebene)       |
-| 09 | `LEERER_BUCHUNGSTEXT`     | 1.0     |          | Buchungstext fehlt oder ist kürzer als 3 Zeichen                          |
-| 10 | `VELOCITY_ANOMALIE`       | 1.5     |          | Ungewöhnlich viele Buchungen desselben Erfassers an einem Tag             |
-| 11 | `RECHNUNGSDATUM_PERIODE`  | 1.5     |          | Rechnungsmonat weicht vom Buchungsmonat ab (Periodenverschiebung)         |
-| 12 | `BUCHUNGSTEXT_PERIODE`    | 1.0     |          | Periodenangabe im Buchungstext stimmt nicht mit Buchungsdatum überein     |
-| 13 | `MONATS_ENTWICKLUNG`      | 1.5     |          | Monatlicher Betrag auf GuV-Konto ist Z-Score-Ausreißer (≥ 8 Normalmonate) |
-| 14 | `FEHLENDE_MONATSBUCHUNG`  | 1.0     |          | Konto hat regulär monatliche Buchungen, fehlt aber in einem Monat         |
+| 01 | `BETRAG_ZSCORE`           | 2.0     | ✓        | Betrag > 2,5 Standardabweichungen vom Mittelwert (je Kontoklasse)         |
+| 02 | `BETRAG_IQR`              | 1.5     |          | Betrag oberhalb des IQR-Fence (Q3 + 3,0 × IQR, je Kontoklasse)           |
+| 03 | `KONTO_BETRAG_ANOMALIE`   | 2.0     | ✓        | Betrag ist Ausreißer relativ zur Kontonorm (Z-Score auf Kontoebene)       |
+| 04 | `NEAR_DUPLICATE`          | 2.0     | ✓        | Gleicher Betrag + Konten, Buchungsdatum innerhalb von 3 Tagen             |
+| 05 | `DOPPELTE_BELEGNUMMER`    | 2.0     | ✓        | Gleiche Belegnummer taucht mehrfach auf                                   |
+| 06 | `BELEG_KREDITOR_DUPLIKAT` | 2.5     | ✓        | Gleiche Belegnummer + gleicher Kreditor (mögliche doppelte Zahlung)        |
+| 07 | `STORNO`                  | 1.5     | ✓        | Buchungstext enthält Storno/Korrektur/Rückbuchung oder Generalumgekehrt   |
+| 08 | `LEERER_BUCHUNGSTEXT`     | 1.0     |          | Buchungstext fehlt oder ist kürzer als 3 Zeichen                          |
+| 09 | `RECHNUNGSDATUM_PERIODE`  | 1.5     |          | Erfassungsmonat weicht vom Buchungsmonat ab (Periodenverschiebung)        |
+| 10 | `BUCHUNGSTEXT_PERIODE`    | 1.0     |          | Periodenangabe im Buchungstext stimmt nicht mit Buchungsdatum überein     |
+| 11 | `NEUER_KREDITOR_HOCH`     | 2.5     | ✓        | Kreditor mit ≤ 2 Buchungen und hohem Betrag (> μ + 1,5σ)                 |
+| 12 | `MONATS_ENTWICKLUNG`      | 1.5     |          | Monatlicher Betrag auf GuV-Konto ist Z-Score-Ausreißer                    |
+| 13 | `FEHLENDE_MONATSBUCHUNG`  | 1.0     |          | Konto hat regulär monatliche Buchungen, fehlt aber in einem Monat         |
 
 **Kritische Flags** führen dazu, dass die Buchung **immer** im Output erscheint, unabhängig vom Score-Schwellenwert.
 
@@ -215,17 +213,11 @@ docker compose up -d --build --scale worker=4
 
 ### Parallele Pipeline (Single-Job-Beschleunigung)
 
-Ab **100.000 Zeilen** (konfigurierbar via `PARALLEL_THRESHOLD`) werden die 14 Anomalie-Tests
+Ab **100.000 Zeilen** (konfigurierbar via `PARALLEL_THRESHOLD`) werden die 13 Anomalie-Tests
 automatisch parallel über alle verfügbaren Worker verteilt (Celery chord).
 
-| Workers | Sequentiell | Parallel | Speedup |
-| ------- | ----------- | -------- | ------- |
-| 1       | ~30s        | ~35s     | 0.9×    |
-| 2       | ~30s        | ~18s     | 1.7×    |
-| 4       | ~30s        | ~12s     | 2.5×    |
-
 **Flow:** `analyze_task` liest die Datei, speichert den vorbereiteten DataFrame als Parquet
-auf dem shared Volume. 14 `run_test_task`s laufen parallel (je einer pro Test, jeder liest
+auf dem shared Volume. 13 `run_test_task`s laufen parallel (je einer pro Test, jeder liest
 das Parquet). `merge_task` sammelt die Flag-Ergebnisse, berechnet Scores und exportiert.
 
 **Konfiguration in `.env`:**
@@ -249,8 +241,9 @@ prefilter-api/
 ├── requirements.lock    # pip freeze → reproduzierbare Builds
 ├── app.py               # Gradio UI + Celery-Dispatcher + lokaler Fallback
 ├── src/
+│   ├── accounting.py    # Kontoklassen + Vorzeichen-Logik (ZENTRAL)
 │   ├── config.py        # AnalysisConfig (Pydantic-Schwellenwerte)
-│   ├── engine.py        # AnomalyEngine: orchestriert 14 Tests
+│   ├── engine.py        # AnomalyEngine: orchestriert 13 Tests
 │   ├── main.py          # FastAPI REST API + WebSocket
 │   ├── models.py        # Pydantic-Ergebnis-Modelle
 │   ├── parser.py        # CSV/XLS Einlesen + Spalten-Mapping + Serie-Parsing

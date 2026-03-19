@@ -6,7 +6,7 @@ Gradio UI → Celery Worker-Pool → Ergebnis-Anzeige + Langdock Webhook
 Features v5:
   - Live-Log Streaming (Generator-basiert)
   - Daten-Validierung mit Spalten-Check
-  - Test-Toggles (14 Checkboxen, auto-disable bei fehlenden Spalten)
+  - Test-Toggles (13 Checkboxen, auto-disable bei fehlenden Spalten)
 """
 
 import json
@@ -406,7 +406,7 @@ with gr.Blocks(
 
     gr.Markdown("# Buchungs-Anomalie Pre-Filter", elem_classes="main-title")
     gr.Markdown(
-        "Buchungsdaten hochladen (CSV / XLS / XLSX) → 14 statistische Tests → "
+        "Buchungsdaten hochladen (CSV / XLS / XLSX) → 13 statistische Tests → "
         "verdächtige Buchungen an Langdock Agent senden",
         elem_classes="subtitle",
     )
@@ -547,10 +547,10 @@ with gr.Blocks(
 
     gr.Markdown(
         "---\n"
-        "**14 Tests:** Z-Score | IQR | Konto-Betrag | Near-Duplicate | "
+        "**13 Tests:** Z-Score | IQR | Konto-Betrag | Near-Duplicate | "
         "Doppelte Belegnummer | Beleg-Kreditor-Duplikat | Storno | "
         "Leerer Buchungstext | Rechnungsdatum-Periode | Buchungstext-Periode | "
-        "Neuer Kreditor | Velocity-Anomalie | "
+        "Neuer Kreditor | "
         "Monats-Entwicklung | Fehlende Monatsbuchung"
     )
 

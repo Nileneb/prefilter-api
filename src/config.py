@@ -77,12 +77,6 @@ class AnalysisConfig(BaseModel):
         description="Mindestanzahl Buchungen pro Konto für KONTO_BETRAG_ANOMALIE (Standard: 5)",
     )
 
-    # ── Velocity-Anomalie ────────────────────────────────────
-    velocity_min_months: int = Field(
-        3, ge=2,
-        description="Mindest-Monate Daten für VELOCITY_ANOMALIE (Standard: 3)",
-    )
-
     # ── Monats-Entwicklung ───────────────────────────────────
     monats_entwicklung_zscore: float = Field(
         2.5, ge=1.0,

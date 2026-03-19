@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.accounting import kontoklasse, ERTRAG_MIN, AUFWAND_MAX
 from src.config import AnalysisConfig
 from src.tests.base import AnomalyTest, EngineStats
 
@@ -27,12 +28,9 @@ class MonatsEntwicklung(AnomalyTest):
         if len(subset) < 10:
             return 0
 
-        # GuV-Konten (konto_soll 40000–79999)
-        konto_num = pd.to_numeric(
-            subset["konto_soll"].astype(str).str.extract(r"(\d+)", expand=False),
-            errors="coerce",
-        )
-        pnl_mask = (konto_num >= 40000) & (konto_num <= 79999)
+        # GuV-Konten (Ertrag + Aufwand)
+        kl = kontoklasse(subset["konto_soll"])
+        pnl_mask = kl.isin(["Ertrag", "Aufwand"])
         pnl      = subset.loc[pnl_mask].copy()
 
         if len(pnl) < 10:

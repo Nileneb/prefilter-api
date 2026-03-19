@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import pytest
 
 from src.charts import ChartBuilder, _empty_figure
+from src.accounting import kontoklasse, compute_signed_betrag
 
 
 @pytest.fixture
@@ -29,19 +30,21 @@ def sample_df():
         "soll_haben": sh,
         "klasse": "K",
         "kostenstelle": "",
-        "erfasser": "",
         "konto_haben": "",
         "_datum": dates,
         "_betrag": betraege.astype("float32"),
         "_abs": np.abs(betraege).astype("float32"),
         "_score": np.random.uniform(0, 5, n).round(2),
     })
+    # Abgeleitete Spalten
+    df["_kontoklasse"] = kontoklasse(df["konto_soll"])
+    df["_betrag_signed"] = compute_signed_betrag(df)
     # Flag-Spalten
     for flag in ["BETRAG_ZSCORE", "BETRAG_IQR", "NEAR_DUPLICATE", "STORNO",
                  "DOPPELTE_BELEGNUMMER", "BELEG_KREDITOR_DUPLIKAT",
                  "LEERER_BUCHUNGSTEXT", "RECHNUNGSDATUM_PERIODE",
                  "BUCHUNGSTEXT_PERIODE", "NEUER_KREDITOR_HOCH",
-                 "KONTO_BETRAG_ANOMALIE", "VELOCITY_ANOMALIE",
+                 "KONTO_BETRAG_ANOMALIE",
                  "MONATS_ENTWICKLUNG", "FEHLENDE_MONATSBUCHUNG"]:
         df[f"flag_{flag}"] = np.random.choice([True, False], n, p=[0.1, 0.9])
 
@@ -70,7 +73,6 @@ def sample_result():
                 "BUCHUNGSTEXT_PERIODE": 0,
                 "NEUER_KREDITOR_HOCH": 4,
                 "KONTO_BETRAG_ANOMALIE": 6,
-                "VELOCITY_ANOMALIE": 0,
                 "MONATS_ENTWICKLUNG": 2,
                 "FEHLENDE_MONATSBUCHUNG": 1,
             },

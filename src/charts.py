@@ -14,17 +14,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-
-def _kontoklasse(konto_soll: pd.Series) -> pd.Series:
-    """Bestimmt Kontoklasse: Ertrag (40000–59999), Aufwand (60000–79999), Bestand (0–39999)."""
-    num = pd.to_numeric(
-        konto_soll.astype(str).str.strip().str.replace(r"\D", "", regex=True),
-        errors="coerce",
-    )
-    klasse = pd.Series("Bestand", index=konto_soll.index)
-    klasse = klasse.where(~((num >= 40000) & (num < 60000)), "Ertrag")
-    klasse = klasse.where(~((num >= 60000) & (num < 80000)), "Aufwand")
-    return klasse
+from src.accounting import kontoklasse
 
 
 class ChartBuilder:
@@ -75,25 +65,35 @@ class ChartBuilder:
     def monthly_pnl(self) -> go.Figure:
         """Monatliche Betrags-Entwicklung nach Kontoklasse (Linienchart)."""
         df = self.df.copy()
-        if "_datum" not in df.columns or "_betrag" not in df.columns:
+        if "_datum" not in df.columns:
             return _empty_figure("Keine Datums-/Betragsdaten")
         df = df[df["_datum"].notna()].copy()
         if df.empty:
             return _empty_figure("Keine gültigen Datumswerte")
 
+        # _betrag_signed nutzen wenn vorhanden, sonst Fallback auf _betrag
+        betrag_col = "_betrag_signed" if "_betrag_signed" in df.columns else "_betrag"
+        use_abs_fallback = betrag_col == "_betrag"
+
         df["_monat"] = df["_datum"].dt.to_period("M").dt.to_timestamp()
-        df["_kontoklasse"] = _kontoklasse(df["konto_soll"])
+        df["_kontoklasse"] = kontoklasse(df["konto_soll"]) if "_kontoklasse" not in df.columns else df["_kontoklasse"]
 
         agg = (
-            df.groupby(["_monat", "_kontoklasse"], observed=True)["_betrag"]
+            df.groupby(["_monat", "_kontoklasse"], observed=True)[betrag_col]
             .sum()
             .reset_index()
         )
         fig = px.line(
-            agg, x="_monat", y="_betrag", color="_kontoklasse",
-            labels={"_monat": "Monat", "_betrag": "Summe Betrag", "_kontoklasse": "Kontoklasse"},
+            agg, x="_monat", y=betrag_col, color="_kontoklasse",
+            labels={"_monat": "Monat", betrag_col: "Summe Betrag", "_kontoklasse": "Kontoklasse"},
             title="Monatliche Betrags-Entwicklung nach Kontoklasse",
         )
+        if use_abs_fallback:
+            fig.add_annotation(
+                text="⚠️ Soll/Haben fehlt — nur Absolutbeträge",
+                xref="paper", yref="paper", x=0.5, y=1.05,
+                showarrow=False, font=dict(size=11, color="orange"),
+            )
         return fig
 
     def top_accounts(self, n: int = 10) -> go.Figure:
@@ -128,28 +128,30 @@ class ChartBuilder:
     def ertrag_aufwand_monthly(self) -> go.Figure:
         """Ertrag vs. Aufwand pro Monat (gruppiertes Balkendiagramm)."""
         df = self.df.copy()
-        if "_datum" not in df.columns or "_betrag" not in df.columns:
+        if "_datum" not in df.columns:
             return _empty_figure("Keine Datums-/Betragsdaten")
         df = df[df["_datum"].notna()].copy()
         if df.empty:
             return _empty_figure("Keine gültigen Datumswerte")
 
+        betrag_col = "_betrag_signed" if "_betrag_signed" in df.columns else "_betrag"
+
         df["_monat"] = df["_datum"].dt.to_period("M").dt.to_timestamp()
-        df["_kontoklasse"] = _kontoklasse(df["konto_soll"])
+        df["_kontoklasse"] = kontoklasse(df["konto_soll"]) if "_kontoklasse" not in df.columns else df["_kontoklasse"]
 
         ea = df[df["_kontoklasse"].isin(["Ertrag", "Aufwand"])]
         if ea.empty:
             return _empty_figure("Keine Ertrags-/Aufwandskonten")
 
         agg = (
-            ea.groupby(["_monat", "_kontoklasse"], observed=True)["_betrag"]
+            ea.groupby(["_monat", "_kontoklasse"], observed=True)[betrag_col]
             .sum()
             .reset_index()
         )
         fig = px.bar(
-            agg, x="_monat", y="_betrag", color="_kontoklasse",
+            agg, x="_monat", y=betrag_col, color="_kontoklasse",
             barmode="group",
-            labels={"_monat": "Monat", "_betrag": "Summe Betrag", "_kontoklasse": "Kontoklasse"},
+            labels={"_monat": "Monat", betrag_col: "Summe Betrag", "_kontoklasse": "Kontoklasse"},
             title="Ertrag vs. Aufwand pro Monat",
         )
         return fig
@@ -279,16 +281,17 @@ class ChartBuilder:
         work = df[has_sh].copy()
         work["_sh"] = sh[has_sh]
         work["_is_soll"] = work["_sh"].isin(["S", "SOLL"])
+        betrag_col = "_betrag_signed" if "_betrag_signed" in work.columns else "_abs"
 
         soll = (
             work[work["_is_soll"]]
-            .groupby("konto_soll", observed=True)["_abs"]
+            .groupby("konto_soll", observed=True)[betrag_col]
             .sum()
             .rename("Soll")
         )
         haben = (
             work[~work["_is_soll"]]
-            .groupby("konto_soll", observed=True)["_abs"]
+            .groupby("konto_soll", observed=True)[betrag_col]
             .sum()
             .rename("Haben")
         )

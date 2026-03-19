@@ -1,7 +1,7 @@
 """
 Buchungs-Anomalie Pre-Filter — Anomaly Engine v4.2
 
-Orchestriert alle 14 Test-Module aus src/tests/*.
+Orchestriert alle 13 Test-Module aus src/tests/*.
 Vollständig vektorisiert, kein iterrows(), kein O(n²).
 
 Public API:
@@ -19,6 +19,7 @@ from typing import Callable
 
 import pandas as pd
 
+from src.accounting import kontoklasse, compute_signed_betrag
 from src.config import AnalysisConfig
 from src.logging_config import get_logger
 from src.parser import COLUMN_ALIASES, parse_german_number_series, parse_date_series
@@ -90,6 +91,8 @@ class AnomalyEngine:
         df["_betrag"] = parse_german_number_series(df["betrag"]).fillna(0.0).astype("float32")
         df["_abs"]    = df["_betrag"].abs()
         df["_datum"]  = parse_date_series(df["datum"])
+        df["_kontoklasse"] = kontoklasse(df["konto_soll"])
+        df["_betrag_signed"] = compute_signed_betrag(df).astype("float32")
         df["_score"]  = 0.0
 
         # Kategorische Spalten — beschleunigt GroupBy und spart RAM
@@ -223,7 +226,7 @@ class AnomalyEngine:
 
         out_cols = [
             "datum", "konto_soll", "konto_haben", "betrag",
-            "buchungstext", "belegnummer", "kostenstelle", "kreditor", "erfasser",
+            "buchungstext", "belegnummer", "kostenstelle", "kreditor", "soll_haben",
         ]
 
         # Vektorisiert: datum formatieren wo vorhanden
@@ -308,7 +311,6 @@ class AnomalyEngine:
     def _t16_neuer_kreditor_hoch(self)   -> None: self._run_named_test("NEUER_KREDITOR_HOCH")
     def _t18_konto_betrag_anomalie(self) -> None: self._run_named_test("KONTO_BETRAG_ANOMALIE")
     def _t21_leerer_buchungstext(self)   -> None: self._run_named_test("LEERER_BUCHUNGSTEXT")
-    def _t22_velocity_anomalie(self)     -> None: self._run_named_test("VELOCITY_ANOMALIE")
     def _t23_rechnungsdatum_periode(self)   -> None: self._run_named_test("RECHNUNGSDATUM_PERIODE")
     def _t24_buchungstext_periode(self)     -> None: self._run_named_test("BUCHUNGSTEXT_PERIODE")
     def _t25_monats_entwicklung(self)       -> None: self._run_named_test("MONATS_ENTWICKLUNG")

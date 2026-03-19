@@ -12,23 +12,9 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 
+from src.accounting import kontoklasse
 from src.config import AnalysisConfig
 from src.tests.base import AnomalyTest, EngineStats
-
-
-def _kontoklasse(konto_soll: pd.Series) -> pd.Series:
-    """Bestimmt Kontoklasse aus der Kontonummer (erste Ziffer(n)).
-
-    Ertrag: 40000–59999, Aufwand: 60000–79999, Bestand: 0–39999
-    """
-    num = pd.to_numeric(
-        konto_soll.astype(str).str.strip().str.replace(r"\D", "", regex=True),
-        errors="coerce",
-    )
-    klasse = pd.Series("bestand", index=konto_soll.index)
-    klasse = klasse.where(~((num >= 40000) & (num < 60000)), "ertrag")
-    klasse = klasse.where(~((num >= 60000) & (num < 80000)), "aufwand")
-    return klasse
 
 
 class BetragZscore(AnomalyTest):
@@ -42,7 +28,7 @@ class BetragZscore(AnomalyTest):
         if not has_val.any():
             return self._flag(df, pd.Series(False, index=df.index))
 
-        klasse = _kontoklasse(df["konto_soll"])
+        klasse = kontoklasse(df["konto_soll"])
         mask = pd.Series(False, index=df.index)
 
         for kl in klasse[has_val].unique():
@@ -70,7 +56,7 @@ class BetragIqr(AnomalyTest):
         if not has_val.any():
             return self._flag(df, pd.Series(False, index=df.index))
 
-        klasse = _kontoklasse(df["konto_soll"])
+        klasse = kontoklasse(df["konto_soll"])
         mask = pd.Series(False, index=df.index)
 
         for kl in klasse[has_val].unique():
