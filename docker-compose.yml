@@ -18,9 +18,11 @@ services:
       - LOG_FORMAT=${LOG_FORMAT:-json}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_DIR=/data/logs
+      - HISTORY_DIR=/data/history
     volumes:
       - uploads:/data/uploads
       - ./logs:/data/logs
+      - history:/data/history
     depends_on:
       redis:
         condition: service_healthy
@@ -43,9 +45,11 @@ services:
       - LOG_FORMAT=${LOG_FORMAT:-json}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_DIR=/data/logs
+      - HISTORY_DIR=/data/history
     volumes:
       - uploads:/data/uploads
       - ./logs:/data/logs
+      - history:/data/history
     depends_on:
       redis:
         condition: service_healthy
@@ -66,3 +70,4 @@ services:
 
 volumes:
   uploads:
+  history:

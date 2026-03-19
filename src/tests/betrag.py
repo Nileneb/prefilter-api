@@ -4,7 +4,7 @@ Buchungs-Anomalie Pre-Filter — Betrags-Tests
 Tests:
     BETRAG_ZSCORE          — Betrag > Z-Score-Schwelle (NUR Ertrags- + Aufwandskonten)
     BETRAG_IQR             — Betrag > IQR-Fence (NUR Ertrags- + Aufwandskonten)
-    KONTO_BETRAG_ANOMALIE  — Betrag weicht > X% vom Konto-Durchschnitt ab (5% Ertrag / 20% Aufwand)
+    KONTO_BETRAG_ANOMALIE  — Betrag weicht > konto_betrag_sigma Standardabweichungen vom Konto-Durchschnitt ab
 
 NUR Ertrags- (40000–59999) und Aufwandskonten (60000–79999) werden analysiert.
 Bestandskonten (0–39999) und Kostenrechnungskonten (≥80000) sind ausgeschlossen.
@@ -110,10 +110,12 @@ class KontoBetragAnomalie(AnomalyTest):
             return 0
 
         work = df.loc[work_mask]
+
+        # Z-Score pro Konto (statt %-Abweichung vom Mittelwert)
         konto_stats = (
             work.groupby("konto_soll", observed=True)["_abs"]
-            .agg(["mean", "count"])
-            .rename(columns={"mean": "konto_mean", "count": "konto_count"})
+            .agg(["mean", "std", "count"])
+            .rename(columns={"mean": "konto_mean", "std": "konto_std", "count": "konto_count"})
         )
         konto_stats = konto_stats[
             konto_stats["konto_count"] >= config.konto_min_buchungen
@@ -122,18 +124,15 @@ class KontoBetragAnomalie(AnomalyTest):
         if konto_stats.empty:
             return 0
 
-        # Kontoklasse pro Konto
-        konto_stats["_kl"] = kl[work_mask].groupby(
-            work["konto_soll"], observed=True
-        ).first()
-
-        # Differenzierte %-Abweichungsgrenzen (5% Ertrag / 20% Aufwand)
-        konto_stats["max_pct"] = konto_stats["_kl"].map({
-            "Ertrag": config.ertrag_abweichung_pct,
-            "Aufwand": config.aufwand_abweichung_pct,
-        })
-        konto_stats["thresh_upper"] = konto_stats["konto_mean"] * (1 + konto_stats["max_pct"])
-        konto_stats["thresh_lower"] = konto_stats["konto_mean"] * (1 - konto_stats["max_pct"])
+        # std=NaN (nur 1 Buchung) → 0 → kein Outlier möglich
+        konto_stats["konto_std"] = konto_stats["konto_std"].fillna(0)
+        konto_stats["thresh_upper"] = (
+            konto_stats["konto_mean"] + config.konto_betrag_sigma * konto_stats["konto_std"]
+        )
+        konto_stats["thresh_lower"] = (
+            (konto_stats["konto_mean"] - config.konto_betrag_sigma * konto_stats["konto_std"])
+            .clip(lower=0)
+        )
 
         df_tmp = df.join(
             konto_stats[["thresh_upper", "thresh_lower"]], on="konto_soll"

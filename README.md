@@ -1,4 +1,4 @@
-# Buchungs-Anomalie Pre-Filter v6.0
+# Buchungs-Anomalie Pre-Filter v6.1
 
 Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) entgegennimmt, 13 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
 
@@ -7,8 +7,18 @@ Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Expo
 - **Beleg-Ebene**: Buchungszeilen desselben Belegs (DVBelegnummer) werden als zusammengehörig erkannt; Duplikat-Tests ignorieren beleg-interne Zeilen
 - **Storno-Ausschluss**: Storno-Buchungen (Generalumgekehrt ≠ leer) werden aus 9 von 13 Tests automatisch ausgeschlossen, um False-Positives zu eliminieren
 - **Generalumgekehrt-Fix**: Das Feld enthält DVBelegnummern des Storno-Gegenbelegs (nicht boolean) — jeder nicht-leere Wert = Storno
-- **Kontoklasse Kostenrechnung**: Kontonummern ≥ 80000 werden als "Kostenrechnung" klassifiziert (statt fälschlich "Bestand")- **Kontoklassenspezifische Abweichungsgrenzen**: Betrags-Tests (BETRAG_ZSCORE, BETRAG_IQR, KONTO_BETRAG_ANOMALIE) analysieren NUR Ertrags- und Aufwandskonten. KONTO_BETRAG_ANOMALIE und MONATS_ENTWICKLUNG nutzen differenzierte %-Abweichungsgrenzen: **5% für Ertragskonten**, **20% für Aufwandskonten**- **float64-Präzision**: `_betrag`/`_abs` nutzen float64 statt float32 (keine Rundungsartefakte mehr)
+- **Kontoklasse Kostenrechnung**: Kontonummern ≥ 80000 werden als "Kostenrechnung" klassifiziert (statt fälschlich "Bestand")
+- **float64-Präzision**: `_betrag`/`_abs` nutzen float64 statt float32 (keine Rundungsartefakte mehr)
 - **Erweiterte Spalten-Aliase**: DVBelegnummer, DVBuchungsnummer, InterneBelegnummer, Mandant, Belegart u.a.
+
+### v6.1 — False-Positive-Reduktion & History
+
+- **KONTO_BETRAG_ANOMALIE → Z-Score**: Nutzt jetzt `mean ± 3σ` pro Konto statt %-Schwellen (5%/20%), die auf Einzelbuchungen nicht anwendbar waren (~2151 → ~80 Flags)
+- **MONATS_ENTWICKLUNG → Z-Score**: Nutzt jetzt `mean ± 2.5σ` auf Monatssummen statt %-Schwellen (~1223 → ~100 Flags)
+- **DOPPELTE_BELEGNUMMER**: Reguläre-Muster-Ausschluss (Nummernkreise/Buchungsläufe) + min_count 5→10 (~1360 → ~150 Flags)
+- **BELEG_KREDITOR_DUPLIKAT**: Level-2-Zeitfenster 7→3 Tage, regular_pct 20%→15% (~1362 → ~200 Flags)
+- **History-Modul** (`src/history.py`): Monatsdurchschnitte pro Konto persistent speichern, Vergleich mit letztem Lauf (Trend-Erkennung)
+- **Erwartete Gesamtreduktion**: ~52% verdächtig → ~7-9% verdächtig
 
 ---
 
@@ -70,6 +80,9 @@ GRADIO_PASSWORD=secret
 
 # Root-Path wenn hinter Reverse-Proxy mit Subpath
 ROOT_PATH=/prefilter
+
+# Persistentes History-Verzeichnis (NEU v6.1)
+HISTORY_DIR=/data/history
 ```
 
 Die Webhook-URL kann auch direkt in der Web-UI überschrieben werden.
@@ -138,14 +151,14 @@ Die Eingabedaten stammen typischerweise aus Diamant/4 Finanzbuchhaltung. Jede Ze
 
 ### Kontoklassen (src/accounting.py)
 
-| Kontoklasse        | Bereich       | Betrags-Tests | Abweichungsgrenze |
-| ------------------ | ------------- | ------------- | ----------------- |
-| Bestand            | 0 – 39 999   | ✗ (ausgeschlossen) | —             |
-| Ertrag             | 40 000 – 59 999 | ✓           | **5%**            |
-| Aufwand            | 60 000 – 79 999 | ✓           | **20%**           |
-| Kostenrechnung     | ≥ 80 000     | ✗ (ausgeschlossen) | —             |
+| Kontoklasse        | Bereich       | Betrags-Tests |
+| ------------------ | ------------- | ------------- |
+| Bestand            | 0 – 39 999   | ✗ (ausgeschlossen) |
+| Ertrag             | 40 000 – 59 999 | ✓           |
+| Aufwand            | 60 000 – 79 999 | ✓           |
+| Kostenrechnung     | ≥ 80 000     | ✗ (ausgeschlossen) |
 
-> **Wichtig:** Betrags-Anomalie-Tests (BETRAG_ZSCORE, BETRAG_IQR, KONTO_BETRAG_ANOMALIE) analysieren **nur** Ertrags- und Aufwandskonten. Bestandskonten und Kostenrechnungskonten werden komplett ausgeschlossen. KONTO_BETRAG_ANOMALIE und MONATS_ENTWICKLUNG nutzen differenzierte %-Abweichungsgrenzen pro Kontoklasse.
+> **Wichtig:** Betrags-Anomalie-Tests (BETRAG_ZSCORE, BETRAG_IQR, KONTO_BETRAG_ANOMALIE) analysieren **nur** Ertrags- und Aufwandskonten. KONTO_BETRAG_ANOMALIE nutzt Z-Score pro Konto (mean ± 3σ), MONATS_ENTWICKLUNG nutzt Z-Score auf Monatssummen (mean ± 2.5σ).
 
 ---
 
@@ -215,7 +228,7 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 | -- | ------------------------- | ------- | -------- | -------------------------------------------------------------------------- |
 | 01 | `BETRAG_ZSCORE`           | 2.0     | ✓        | Betrag > 2,5 Standardabweichungen vom Mittelwert (NUR Ertrags-/Aufwandskonten) |
 | 02 | `BETRAG_IQR`              | 1.5     |          | Betrag oberhalb des IQR-Fence (Q3 + 3,0 × IQR, NUR Ertrags-/Aufwandskonten)  |
-| 03 | `KONTO_BETRAG_ANOMALIE`   | 2.0     | ✓        | Betrag weicht > X% vom Kontodurchschnitt ab (5% Ertrag / 20% Aufwand)         |
+| 03 | `KONTO_BETRAG_ANOMALIE`   | 2.0     | ✓        | Betrag weicht > 3σ vom Konto-Durchschnitt ab (Z-Score pro Konto)             |
 | 04 | `NEAR_DUPLICATE`          | 2.0     | ✓        | Gleicher Betrag + Konten, Buchungsdatum innerhalb von 3 Tagen             |
 | 05 | `DOPPELTE_BELEGNUMMER`    | 2.0     | ✓        | Gleiche Belegnummer taucht mehrfach auf                                   |
 | 06 | `BELEG_KREDITOR_DUPLIKAT` | 2.5     | ✓        | Gleiche Belegnummer + gleicher Kreditor (mögliche doppelte Zahlung)        |
@@ -224,7 +237,7 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 | 09 | `RECHNUNGSDATUM_PERIODE`  | 1.5     |          | Erfassungsmonat weicht vom Buchungsmonat ab (Periodenverschiebung)        |
 | 10 | `BUCHUNGSTEXT_PERIODE`    | 1.0     |          | Periodenangabe im Buchungstext stimmt nicht mit Buchungsdatum überein     |
 | 11 | `NEUER_KREDITOR_HOCH`     | 2.5     | ✓        | Kreditor mit ≤ 2 Buchungen und hohem Betrag (> μ + 1,5σ)                 |
-| 12 | `MONATS_ENTWICKLUNG`      | 1.5     |          | Monatsbetrag weicht > X% vom Kontodurchschnitt ab (5% Ertrag / 20% Aufwand)   |
+| 12 | `MONATS_ENTWICKLUNG`      | 1.5     |          | Monatssumme weicht > 2.5σ vom Konto-Durchschnitt ab (Z-Score)                 |
 | 13 | `FEHLENDE_MONATSBUCHUNG`  | 1.0     |          | Konto hat regulär monatliche Buchungen, fehlt aber in einem Monat         |
 
 **Kritische Flags** führen dazu, dass die Buchung **immer** im Output erscheint, unabhängig vom Score-Schwellenwert.
@@ -234,6 +247,20 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 - Jedes ausgelöste Flag addiert sein **Gewicht** zum `anomaly_score` der Buchung.
 - Buchungen mit `anomaly_score ≥ 2.0` oder mindestens einem kritischen Flag werden ausgegeben.
 - Maximal **1.000 Zeilen** im Output (sortiert nach Score absteigend).
+
+---
+
+## History-Modul (NEU v6.1)
+
+Nach jedem Analyse-Lauf speichert die Engine automatisch Monatssummen pro Konto als JSON in `HISTORY_DIR` (Default: `data/history`). Beim nächsten Lauf wird verglichen:
+
+- **Verdächtig-Anteil**: Stieg/sank der %-Anteil verdächtiger Buchungen?
+- **Flag-Deltas**: Welche Flags sind mehr/weniger geworden?
+- **Neue/entfallene Konten**: Gibt es Konten, die vorher nicht da waren?
+
+Die Vergleichsergebnisse erscheinen im Engine-Log und im Rückgabewert (`history_comparison`).
+
+**Docker:** Das `history`-Volume (`/data/history`) ist persistent und überlebt Container-Neustarts.
 
 ---
 
@@ -282,6 +309,7 @@ prefilter-api/
 │   ├── accounting.py    # Kontoklassen + Vorzeichen-Logik (ZENTRAL)
 │   ├── config.py        # AnalysisConfig (Pydantic-Schwellenwerte)
 │   ├── engine.py        # AnomalyEngine: orchestriert 13 Tests
+│   ├── history.py       # Persistente Lauf-History + Trend-Vergleich (NEU v6.1)
 │   ├── main.py          # FastAPI REST API + WebSocket
 │   ├── models.py        # Pydantic-Ergebnis-Modelle
 │   ├── parser.py        # CSV/XLS Einlesen + Spalten-Mapping + Serie-Parsing
@@ -289,7 +317,7 @@ prefilter-api/
 │   ├── worker.py        # Celery Task (Redis-Backend)
 │   └── tests/           # Test-Module (betrag, duplikate, buchungslogik, …)
 └── tests/
-    ├── test_engine.py       # 100 Unit-Tests
+    ├── test_engine.py       # 108 Unit-Tests
     ├── test_performance.py  # 500k-Zeilen Benchmark (@pytest.mark.slow)
     └── test_integration.py  # FastAPI+Redis E2E (@pytest.mark.integration)
 ```

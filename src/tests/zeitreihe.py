@@ -2,7 +2,7 @@
 Buchungs-Anomalie Pre-Filter — Zeitreihen-Tests
 
 Tests:
-    MONATS_ENTWICKLUNG      — Z-Score auf monatl. GuV-Konten-Entwicklung
+    MONATS_ENTWICKLUNG      — Z-Score auf monatl. GuV-Konten-Summen (pro Konto)
     FEHLENDE_MONATSBUCHUNG  — Konto fehlt Buchung in Monat, wo sonst aktiv
 """
 
@@ -39,7 +39,6 @@ class MonatsEntwicklung(AnomalyTest):
             return 0
 
         pnl["_ym"] = pnl["_datum"].dt.to_period("M").astype(str)
-        pnl["_kl"] = kl[pnl_mask]
 
         monthly = (
             pnl.groupby(["konto_soll", "_ym"], observed=True)["_abs"]
@@ -48,7 +47,7 @@ class MonatsEntwicklung(AnomalyTest):
         )
         konto_stats = (
             monthly.groupby("konto_soll", observed=True)["monatssumme"]
-            .agg(ks_mean="mean", ks_count="count")
+            .agg(ks_mean="mean", ks_std="std", ks_count="count")
             .reset_index()
         )
         konto_stats = konto_stats[
@@ -58,25 +57,19 @@ class MonatsEntwicklung(AnomalyTest):
         if konto_stats.empty:
             return 0
 
-        # Kontoklasse pro Konto
-        konto_kl = pnl.groupby("konto_soll", observed=True)["_kl"].first().reset_index()
-        konto_stats = konto_stats.merge(konto_kl, on="konto_soll")
+        # std=NaN (nur 1 Monat) → 0 → kein Outlier möglich
+        konto_stats["ks_std"] = konto_stats["ks_std"].fillna(0)
 
-        # Differenzierte %-Abweichungsgrenzen (5% Ertrag / 20% Aufwand)
-        konto_stats["max_pct"] = konto_stats["_kl"].map({
-            "Ertrag": config.ertrag_abweichung_pct,
-            "Aufwand": config.aufwand_abweichung_pct,
-        })
-
+        # Z-Score pro Konto-Monat (statt %-Abweichung)
         with_stats = monthly.merge(
-            konto_stats[["konto_soll", "ks_mean", "max_pct"]], on="konto_soll"
+            konto_stats[["konto_soll", "ks_mean", "ks_std"]], on="konto_soll"
         )
-        with_stats["pct_dev"] = (
-            (with_stats["monatssumme"] - with_stats["ks_mean"]).abs() / with_stats["ks_mean"]
+        # std=0 → alle Monate identisch → kein Outlier möglich
+        with_stats["z"] = (
+            (with_stats["monatssumme"] - with_stats["ks_mean"]).abs()
+            / with_stats["ks_std"].replace(0, float("inf"))
         )
-        outliers  = with_stats[
-            with_stats["pct_dev"] > with_stats["max_pct"]
-        ]
+        outliers = with_stats[with_stats["z"] > config.monats_entwicklung_zscore]
         spike_set = set(zip(outliers["konto_soll"], outliers["_ym"]))
 
         if not spike_set:

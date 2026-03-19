@@ -29,6 +29,7 @@ from src.tests.duplikate import get_tests as get_duplikate_tests
 from src.tests.buchungslogik import get_tests as get_buchungslogik_tests
 from src.tests.kreditor import get_tests as get_kreditor_tests
 from src.tests.zeitreihe import get_tests as get_zeitreihe_tests
+from src import history
 
 logger = get_logger("prefilter.engine")
 
@@ -298,6 +299,22 @@ class AnomalyEngine:
         for line in summary_lines:
             self._log(line)
 
+        # ── History: Lauf speichern + Vergleich mit letztem Lauf ──
+        history_comparison = ""
+        try:
+            mandant_col = df["mandant"].astype(str).str.strip() if "mandant" in df.columns else pd.Series("unknown", index=df.index)
+            mandant_id = mandant_col[mandant_col != ""].mode().iloc[0] if (mandant_col != "").any() else "unknown"
+            filename = getattr(self, "_source_filename", "unknown")
+            history.save_run(mandant_id, filename, df, self.flag_counts, pct)
+            prev = history.load_last_run(mandant_id)
+            if prev:
+                current_data = {"flag_counts": self.flag_counts, "suspicious_pct": pct, "monthly_stats": history._monthly_stats(df)}
+                comparison = history.compare_runs(current_data, prev)
+                history_comparison = history.format_comparison(comparison)
+                self._log(history_comparison)
+        except Exception as e:
+            logger.warning("History-Speicherung fehlgeschlagen", error=str(e))
+
         return {
             "message": f"{n_verd} verdächtige Buchungen ({pct:.1f}%)",
             "statistics": {
@@ -311,6 +328,7 @@ class AnomalyEngine:
             },
             "verdaechtige_buchungen": rows,
             "stammdaten_report":      self.stammdaten_report,
+            "history_comparison":     history_comparison,
             "logs":                   self.logs,
         }
 

@@ -37,24 +37,28 @@ class AnalysisConfig(BaseModel):
         description="Mindest-Monate für reguläres Zahlungsmuster bei NEAR_DUPLICATE (Standard: 6)",
     )
     doppelte_beleg_min_count: int = Field(
-        5, ge=2,
-        description="Mindestanzahl identischer Belegnummern-Gruppen für DOPPELTE_BELEGNUMMER (Standard: 5)",
+        10, ge=2,
+        description="Mindestanzahl identischer Belegnummern-Gruppen für DOPPELTE_BELEGNUMMER (Standard: 10)",
+    )
+    doppelte_beleg_regular_months: int = Field(
+        6, ge=2,
+        description="Mindest-Monate für reguläres Muster bei DOPPELTE_BELEGNUMMER (Standard: 6)",
     )
     doppelte_beleg_prefix_ignore: str = Field(
         "",
         description="Komma-getrennte Belegnummer-Präfixe die ignoriert werden (z.B. 'RW, SB')",
     )
     beleg_kreditor_days: int = Field(
-        7, ge=1,
-        description="Zeitfenster in Tagen für BELEG_KREDITOR_DUPLIKAT Level 2 (Standard: 7)",
+        3, ge=1,
+        description="Zeitfenster in Tagen für BELEG_KREDITOR_DUPLIKAT Level 2 (Standard: 3)",
     )
     beleg_kreditor_max_group_size: int = Field(
         20, ge=2,
         description="Max. Gruppengröße für BELEG_KREDITOR_DUPLIKAT Level 2 (Standard: 20)",
     )
     beleg_kreditor_regular_pct: float = Field(
-        0.20, ge=0.05, le=0.80,
-        description="Anteil der Datenmonate für reguläre Zahlungsmuster bei BELEG_KREDITOR_DUPLIKAT (Standard: 0.20 = 20%)",
+        0.15, ge=0.05, le=0.80,
+        description="Anteil der Datenmonate für reguläre Zahlungsmuster bei BELEG_KREDITOR_DUPLIKAT (Standard: 0.15 = 15%)",
     )
 
     # ── Neuer Kreditor ───────────────────────────────────────
@@ -70,7 +74,7 @@ class AnalysisConfig(BaseModel):
     # ── Konto-Betrag-Anomalie ────────────────────────────────
     konto_betrag_sigma: float = Field(
         3.0, ge=1.0,
-        description="Sigma-Faktor für KONTO_BETRAG_ANOMALIE (Legacy, wird durch %-Grenzen ersetzt)",
+        description="Sigma-Faktor für KONTO_BETRAG_ANOMALIE: Betrag > mean ± sigma×std → Flag (Standard: 3.0)",
     )
     konto_min_buchungen: int = Field(
         5, ge=2,
@@ -80,17 +84,17 @@ class AnalysisConfig(BaseModel):
     # ── Kontoklassenspezifische Abweichungsgrenzen ───────────
     ertrag_abweichung_pct: float = Field(
         0.05, ge=0.01, le=1.0,
-        description="Max. Abweichung vom Kontodurchschnitt für Ertragskonten (Standard: 5%)",
+        description="LEGACY — nicht mehr für KONTO_BETRAG_ANOMALIE verwendet. Reserviert für zukünftige Nutzung.",
     )
     aufwand_abweichung_pct: float = Field(
         0.20, ge=0.01, le=1.0,
-        description="Max. Abweichung vom Kontodurchschnitt für Aufwandskonten (Standard: 20%)",
+        description="LEGACY — nicht mehr für KONTO_BETRAG_ANOMALIE verwendet. Reserviert für zukünftige Nutzung.",
     )
 
     # ── Monats-Entwicklung ───────────────────────────────────
     monats_entwicklung_zscore: float = Field(
         2.5, ge=1.0,
-        description="Z-Score-Grenze für MONATS_ENTWICKLUNG (Legacy, wird durch %-Grenzen ersetzt)",
+        description="Z-Score-Grenze für MONATS_ENTWICKLUNG: Monatssumme > mean ± zscore×std → Flag (Standard: 2.5)",
     )
     monats_entwicklung_min_monate: int = Field(
         3, ge=2,

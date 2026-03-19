@@ -263,6 +263,13 @@ class DoppelteBelegnummer(AnomalyTest):
         sub = df.loc[has_beleg]
         group_cols = ["belegnummer", "konto_soll", "_betrag"]
 
+        # Reguläre Zahlungsmuster ausschließen (Nummernkreise, Buchungsläufe)
+        reg_months = getattr(config, "doppelte_beleg_regular_months", 6)
+        regular_beleg = _find_regular_keys(
+            sub, group_cols, reg_months,
+            logger=self.log, label="doppelte_beleg",
+        )
+
         # Beleg-intern: Nur verschiedene _beleg_id's zählen
         has_beleg_id = "_beleg_id" in sub.columns
         if has_beleg_id:
@@ -274,6 +281,13 @@ class DoppelteBelegnummer(AnomalyTest):
             grp_size = distinct_belege
         else:
             grp_size = sub.groupby(group_cols, sort=False, observed=True).transform("size").iloc[:, 0] if isinstance(sub.groupby(group_cols, sort=False, observed=True).transform("size"), pd.DataFrame) else sub.groupby(group_cols, sort=False, observed=True).transform("size")
+
+        # Reguläre Muster: grp_size auf 0 setzen
+        if regular_beleg:
+            for key, grp in sub.groupby(group_cols, sort=False, observed=True):
+                k = key if isinstance(key, tuple) else (key,)
+                if k in regular_beleg:
+                    grp_size.loc[grp.index] = 0
 
         # Soll/Haben-Paare ausschließen: S+H mit gleicher Belegnr. = Paar
         sh = df["soll_haben"].astype(str).str.strip().str.upper()
