@@ -19,7 +19,7 @@ class MonatsEntwicklung(AnomalyTest):
     name = "MONATS_ENTWICKLUNG"
     weight = 1.5
     critical = False
-    required_columns = ["_abs", "_datum", "konto_soll"]
+    required_columns = ["_abs", "_datum", "konto_soll", "_is_storno", "_kontoklasse"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         # Stornos ausschließen
@@ -85,7 +85,7 @@ class FehlendeMonatsbuchung(AnomalyTest):
     name = "FEHLENDE_MONATSBUCHUNG"
     weight = 1.0
     critical = False
-    required_columns = ["_datum", "konto_soll"]
+    required_columns = ["_datum", "konto_soll", "_is_storno"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         # Stornos ausschließen

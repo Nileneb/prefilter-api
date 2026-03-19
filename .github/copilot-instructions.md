@@ -1,6 +1,6 @@
 # Prefilter-API — Copilot Instructions
 
-> **Stand: 2026-03-19 · Version 6.3 — AI/EMBEDDING-INTEGRATION**
+> **Stand: 2026-03-19 · Version 6.3.2 — PARALLEL-PIPELINE-FIX + CHARTS**
 > Dieses Dokument ist die einzige Wahrheitsquelle für Architektur, Konventionen und Domain-Logik.
 PYTHON ENV VERWENDEN!!!!!!!!!!!!!!!!!!!!!!!!!!!!! AUCH FÜR TESTS!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ---
@@ -375,6 +375,8 @@ ABER: Stornos ausschliessen
 22. **_kreditor_canonical nutzen**: Kreditor-Tests (NeuerKreditorHoch, BelegKreditorDuplikat, NearDuplicate) muessen _kreditor_canonical statt kreditor verwenden (Fallback auf kreditor wenn Clustering deaktiviert).
 23. **Graceful Degradation**: AI-Features (Embeddings, Clustering, Isolation) muessen ohne sentence-transformers/sklearn funktionieren. HAS_EMBEDDINGS/HAS_SKLEARN pruefen.
 24. **Dynamische Charts**: Fuer nutzerdefinierte Visualisierungen DynamicChartBuilder aus src/charts.py verwenden. Neue Chart-Typen in DYNAMIC_CHART_TYPES registrieren, nicht inline in app.py. classify_columns() fuer Dropdown-Befuellung. 3D-Charts NICHT in all_charts() aufnehmen (Performance).
+25. **Worker Charts: Flags-Parquet**: Worker (sequentiell + parallel) speichert nach Analyse ein separates Parquet mit nur flag_* + _score Spalten. app.py laedt dieses in _rebuild_df_for_charts() fuer korrekte Chart-Darstellung im Worker-Modus. Ohne Flags-Parquet sind alle Charts leer (Flags=False, Score=0).
+26. **Trailing Semicolons (Diamant)**: Pipe-delimited Diamant-Export hat trailing `"NULL;;;;;"`. Parser stripped `;+\s*$` vor dem Einlesen. Engine stripped `.str.rstrip(";")` auf generalumgekehrt als Safety-Net.
 - **IMMER README.MD UND copilot-instructions.md AKTUALISIEREN nach Aenderungen, damit Copilot die neuesten Infos hat!**
 
 ---

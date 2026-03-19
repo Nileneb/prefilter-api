@@ -1,4 +1,4 @@
-# Buchungs-Anomalie Pre-Filter v6.2
+# Buchungs-Anomalie Pre-Filter v6.3.2
 
 Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) entgegennimmt, 14 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
 
@@ -46,6 +46,17 @@ Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Expo
 - **Datenqualitäts-Hinweise**: Warnung wenn gewählte Spalte >50% NaN hat.
 - **STORNO _GU_FALSY Bugfix**: `generalumgekehrt` als float geparst ("0.0") wird jetzt korrekt als Nicht-Storno erkannt. Neue `_GU_FALSY` Konstante als Single Source of Truth.
 - **DOPPELTE_BELEGNUMMER Performance**: `transform("nunique")` durch `groupby().nunique()` + `merge()` ersetzt, reguläre Muster per vektorisiertem `MultiIndex.isin()` statt iterativem Loop.
+
+### v6.3.2 — Parallele Pipeline + Storno + Visualisierungen
+
+- **Parallele Pipeline Fix**: `DOPPELTE_BELEGNUMMER` crashte mit `KeyError('_datum')` — fehlte in `required_columns`. Chord-Fehler → gesamte Pipeline abgebrochen bei ≥100k Zeilen.
+- **`required_columns` Audit**: 10 von 14 Tests hatten fehlende Spalten-Deklarationen. Im parallelen Pfad liest der Worker nur deklarierte Spalten aus dem Parquet → fehlende Spalten führten zu Crash oder stiller Fehlfunktion (Storno-Ausschluss deaktiviert).
+- **Storno-Ausschluss im Worker**: 8 Tests hatten `_is_storno` nicht in `required_columns` → `.get()` Fallback lieferte immer `False` → Stornos wurden nicht ausgeschlossen → False-Positives.
+- **`_kontoklasse` deklariert**: 5 Tests hatten `_kontoklasse` nicht in `required_columns` → Fallback auf Neuberechnung statt vorberechneter Spalte.
+- **Parser: Trailing-Semicolons**: Diamant-Pipe-Export enthält `"NULL;;;;;"` am Ende → Parser strippt `; + \s*$` vor dem Einlesen. Engine-Absicherung mit `.str.rstrip(";")` auf `generalumgekehrt`.
+- **STORNO nur verdächtige Muster**: `Storno.run()` flaggt nur noch Text-Stornos ohne GU-Referenz + Hochbetrags-Gutschriften. System-Stornos (mit DVBelegnummer in GU) werden nicht geflaggt (150: 1026→110).
+- **Charts: Worker-Modus Flags-Parquet**: Worker speichert `flag_*` + `_score` als separates Parquet nach Analyse. Chart-Rebuild im UI lädt echte Flags statt leere Initialwerte → Charts zeigen korrekte Score-Verteilung, Flag-Häufigkeit etc.
+- **Dynamischer Chart-Builder Fix**: Lazy-Rebuild wird jetzt auch in `_populate_dynamic_dropdowns()` und `_build_dynamic_chart()` getriggert → funktioniert im Worker-Modus.
 
 ---
 

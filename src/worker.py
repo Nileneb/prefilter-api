@@ -240,12 +240,18 @@ def merge_task(self, test_results: list[dict], prepare_result: dict) -> str:
             _log_redis(r, job_id, f"   Top: {', '.join(f'{k} ({v:,})'.replace(',', '.') for k, v in top_flags)}")
         _log_redis(r, job_id, "════════════════════════════════════════════")
 
+        # Flags-Parquet für UI-Charts speichern (nur flag_* + _score)
+        flags_path = prepare_result["parquet_path"].replace("_prepared.parquet", "_flags.parquet")
+        flag_cols = [c for c in engine.df.columns if c.startswith("flag_")] + ["_score"]
+        engine.df[flag_cols].to_parquet(flags_path, index=True)
+
         r.hset(f"job:{job_id}", mapping={
             "status":       "done",
             "progress_pct": "100",
             "current_test": "",
             "elapsed_s":    str(elapsed),
             "result":       json.dumps(result),
+            "flags_parquet": flags_path,
         })
         _publish(
             r, job_id,
@@ -265,7 +271,7 @@ def merge_task(self, test_results: list[dict], prepare_result: dict) -> str:
         raise
 
     finally:
-        # Cleanup: nur Parquet löschen — Original-CSV bleibt für UI-Charts
+        # Cleanup: nur Prepare-Parquet löschen — Flags-Parquet + CSV bleiben für Charts
         parquet = prepare_result.get("parquet_path")
         if parquet:
             try:
@@ -410,12 +416,19 @@ def _run_sequential(r, job_id: str, df, config_dict: dict, start_time: float, en
         _log_redis(r, job_id, f"   Top: {', '.join(f'{k} ({v:,})'.replace(',', '.') for k, v in top_flags)}")
     _log_redis(r, job_id, "════════════════════════════════════════════")
 
+    # Flags-Parquet für UI-Charts speichern (nur flag_* + _score)
+    flags_dir = os.environ.get("UPLOAD_DIR", "/tmp/prefilter")
+    flags_path = os.path.join(flags_dir, f"job_{job_id}_flags.parquet")
+    flag_cols = [c for c in engine.df.columns if c.startswith("flag_")] + ["_score"]
+    engine.df[flag_cols].to_parquet(flags_path, index=True)
+
     r.hset(f"job:{job_id}", mapping={
         "status":       "done",
         "progress_pct": "100",
         "current_test": "",
         "elapsed_s":    str(elapsed),
         "result":       json.dumps(result),
+        "flags_parquet": flags_path,
     })
     _publish(
         r, job_id,

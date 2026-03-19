@@ -61,7 +61,7 @@ class LeererBuchungstext(AnomalyTest):
     name = "LEERER_BUCHUNGSTEXT"
     weight = 1.0
     critical = False
-    required_columns = ["buchungstext"]
+    required_columns = ["buchungstext", "_kontoklasse"]
 
     _GENERIC = frozenset({
         "diverse", "verschiedenes", "sonstiges", "test",
@@ -83,7 +83,7 @@ class RechnungsdatumPeriode(AnomalyTest):
     name = "RECHNUNGSDATUM_PERIODE"
     weight = 1.5
     critical = False
-    required_columns = ["_datum", "erfassungsdatum", "buchungsperiode"]
+    required_columns = ["_datum", "erfassungsdatum", "buchungsperiode", "_is_storno"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         # _datum = Belegdatum = Rechnungsdatum (Synonyme)
@@ -143,7 +143,7 @@ class BuchungstextPeriode(AnomalyTest):
     name = "BUCHUNGSTEXT_PERIODE"
     weight = 1.0
     critical = False
-    required_columns = ["_datum", "buchungstext"]
+    required_columns = ["_datum", "buchungstext", "_is_storno"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         has_date = df["_datum"].notna()

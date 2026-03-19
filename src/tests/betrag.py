@@ -27,7 +27,7 @@ class BetragZscore(AnomalyTest):
     name = "BETRAG_ZSCORE"
     weight = 2.0
     critical = True
-    required_columns = ["_abs", "_betrag", "konto_soll"]
+    required_columns = ["_abs", "_betrag", "konto_soll", "_is_storno", "_kontoklasse"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         # Stornos aus Berechnung ausschließen
@@ -60,7 +60,7 @@ class BetragIqr(AnomalyTest):
     name = "BETRAG_IQR"
     weight = 1.5
     critical = False
-    required_columns = ["_abs", "_betrag", "konto_soll"]
+    required_columns = ["_abs", "_betrag", "konto_soll", "_is_storno", "_kontoklasse"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         # Stornos aus Berechnung ausschließen
@@ -94,7 +94,7 @@ class KontoBetragAnomalie(AnomalyTest):
     name = "KONTO_BETRAG_ANOMALIE"
     weight = 2.0
     critical = True
-    required_columns = ["_abs", "_betrag", "konto_soll"]
+    required_columns = ["_abs", "_betrag", "konto_soll", "_is_storno", "_kontoklasse"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         # Stornos aus Berechnung ausschließen

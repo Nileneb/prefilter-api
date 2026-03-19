@@ -65,6 +65,7 @@ _current_job_id: str | None = None
 _last_engine_df: pd.DataFrame | None = None   # für on-demand Charts
 _last_result: dict | None = None
 _last_file_path: str | None = None            # für Chart-Rebuild im Worker-Modus
+_last_flags_parquet: str | None = None        # Flags-Parquet vom Worker für Chart-Rebuild
 
 
 # ══════════════════════════════════════════════════════════════
@@ -219,11 +220,12 @@ def analyze_file(
 ):
     """Generator: yielded (summary, logs, table, csv, charts...) bei jedem Schritt."""
     global _current_job_id
-    global _last_engine_df, _last_result, _last_file_path
+    global _last_engine_df, _last_result, _last_file_path, _last_flags_parquet
     _current_job_id = None
     _last_engine_df = None
     _last_result = None
     _last_file_path = None
+    _last_flags_parquet = None
     live_log_lines: list[str] = []
 
     def log(msg: str) -> None:
@@ -411,6 +413,7 @@ def analyze_file(
     # Worker-Modus: Result + Dateipfad speichern für Chart-Rebuild
     _last_result = result
     _last_file_path = dest
+    _last_flags_parquet = data.get("flags_parquet")
     _last_engine_df = None  # wird on-demand beim ersten Chart-Klick gebaut
     log("📊 Charts können jetzt im Tab 'Visualisierungen' generiert werden.")
     yield current_state(summary, display_df, csv_path)
@@ -433,7 +436,7 @@ def _rebuild_df_for_charts(filepath: str, result: dict) -> pd.DataFrame | None:
     """Baut den Engine-DataFrame aus der Originaldatei für Charts nach.
 
     Liest die Datei, bereitet Spalten vor (_prepare), setzt dann Flags+Scores
-    aus dem gespeicherten Result. KEINE Tests werden nochmal ausgeführt.
+    aus dem gespeicherten Flags-Parquet oder initialisiert leer.
     """
     from src.parser import read_upload, map_columns
     from src.engine import AnomalyEngine
@@ -441,13 +444,20 @@ def _rebuild_df_for_charts(filepath: str, result: dict) -> pd.DataFrame | None:
         df = read_upload(filepath)
         df = map_columns(df)
         engine = AnomalyEngine(df)  # _prepare() wird in __init__ aufgerufen
-        # Flag-Spalten + Score initialisieren (alle False / 0)
-        for flag_name in result.get("statistics", {}).get("flag_counts", {}).keys():
-            col = f"flag_{flag_name}"
-            if col not in engine.df.columns:
-                engine.df[col] = False
-        if "_score" not in engine.df.columns:
-            engine.df["_score"] = 0.0
+
+        # Flags aus Parquet laden (vom Worker gespeichert)
+        if _last_flags_parquet and os.path.exists(_last_flags_parquet):
+            flags_df = pd.read_parquet(_last_flags_parquet)
+            for col in flags_df.columns:
+                engine.df[col] = flags_df[col]
+        else:
+            # Fallback: Flag-Spalten + Score leer initialisieren
+            for flag_name in result.get("statistics", {}).get("flag_counts", {}).keys():
+                col = f"flag_{flag_name}"
+                if col not in engine.df.columns:
+                    engine.df[col] = False
+            if "_score" not in engine.df.columns:
+                engine.df["_score"] = 0.0
         return engine.df
     except Exception as exc:
         logger.error("Chart-Rebuild fehlgeschlagen: %s", exc, exc_info=True)
@@ -559,6 +569,10 @@ _last_dynamic_fig: go.Figure | None = None
 
 def _populate_dynamic_dropdowns():
     """Befüllt Dropdowns mit Spalten aus dem letzten Engine-DataFrame."""
+    global _last_engine_df
+    # Lazy-Rebuild triggern (Worker-Modus)
+    if _last_engine_df is None and _last_file_path is not None and _last_result is not None:
+        _last_engine_df = _rebuild_df_for_charts(_last_file_path, _last_result)
     if _last_engine_df is None:
         empty = gr.update(choices=[], value=None)
         return [empty] * 5
@@ -585,7 +599,10 @@ def _toggle_z_axis(chart_type):
 
 def _build_dynamic_chart(chart_type, x, y, z, color, size):
     """Baut den dynamischen Chart."""
-    global _last_dynamic_fig
+    global _last_dynamic_fig, _last_engine_df
+    # Lazy-Rebuild triggern (Worker-Modus)
+    if _last_engine_df is None and _last_file_path is not None and _last_result is not None:
+        _last_engine_df = _rebuild_df_for_charts(_last_file_path, _last_result)
     if _last_engine_df is None:
         _last_dynamic_fig = None
         return _empty_figure("Erst eine Analyse durchführen"), ""

@@ -283,7 +283,7 @@ class DoppelteBelegnummer(AnomalyTest):
     name = "DOPPELTE_BELEGNUMMER"
     weight = 2.0
     critical = True
-    required_columns = ["_betrag", "belegnummer", "konto_soll",
+    required_columns = ["_betrag", "_datum", "belegnummer", "konto_soll",
                         "_is_storno", "_beleg_id", "soll_haben"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:

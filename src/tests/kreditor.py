@@ -18,7 +18,7 @@ class NeuerKreditorHoch(AnomalyTest):
     name = "NEUER_KREDITOR_HOCH"
     weight = 2.5
     critical = True
-    required_columns = ["_abs", "kreditor", "_kreditor_canonical"]
+    required_columns = ["_abs", "kreditor", "_kreditor_canonical", "_is_storno"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         # Stornos ausschließen
