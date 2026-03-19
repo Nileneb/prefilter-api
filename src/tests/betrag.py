@@ -19,15 +19,15 @@ from src.tests.base import AnomalyTest, EngineStats
 def _kontoklasse(konto_soll: pd.Series) -> pd.Series:
     """Bestimmt Kontoklasse aus der Kontonummer (erste Ziffer(n)).
 
-    Aufwand: 5-7xxx, Ertrag: 4xxx, Bestand: 0-3xxx
+    Ertrag: 40000–59999, Aufwand: 60000–79999, Bestand: 0–39999
     """
     num = pd.to_numeric(
         konto_soll.astype(str).str.strip().str.replace(r"\D", "", regex=True),
         errors="coerce",
     )
     klasse = pd.Series("bestand", index=konto_soll.index)
-    klasse = klasse.where(~((num >= 40000) & (num < 50000)), "ertrag")
-    klasse = klasse.where(~((num >= 50000) & (num < 80000)), "aufwand")
+    klasse = klasse.where(~((num >= 40000) & (num < 60000)), "ertrag")
+    klasse = klasse.where(~((num >= 60000) & (num < 80000)), "aufwand")
     return klasse
 
 

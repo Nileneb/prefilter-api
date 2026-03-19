@@ -50,6 +50,7 @@ COLUMN_ALIASES = {
                          "bezeichnung"],
     "erfasser":         ["erfasser", "user", "benutzer", "ersteller", "created_by"],
     # ── Diamant-Spalten ──────────────────────────────────────
+    "soll_haben":       ["soll_haben", "sollhaben", "s_h", "sh", "soll/haben"],
     "klasse":           ["klasse"],
     "belegart":         ["belegart"],
     "buchungsperiode":  ["buchungsperiode"],

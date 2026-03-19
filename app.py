@@ -28,6 +28,7 @@ from src.validator import (
     ALL_TEST_NAMES, TEST_CATEGORIES,
     validate_columns, format_validation_report, ValidationResult,
 )
+from src.charts import ChartBuilder
 
 # ── Logging ──────────────────────────────────────────────────
 setup_logging()
@@ -80,6 +81,15 @@ def _save_csv(df: pd.DataFrame) -> str | None:
     path = os.path.join("/tmp", f"verdaechtige_buchungen_{ts}.csv")
     df.to_csv(path, index=False, sep=";", encoding="utf-8-sig")
     return path
+
+
+def _build_charts(df: pd.DataFrame, result: dict) -> dict:
+    """Baut alle Plotly-Charts aus dem Engine-DataFrame."""
+    try:
+        builder = ChartBuilder(df, result)
+        return builder.all_charts()
+    except Exception:
+        return {}
 
 
 def _format_result(result: dict, webhook_url: str) -> tuple[str, pd.DataFrame]:
@@ -186,16 +196,30 @@ def analyze_file(
     prefix_ignore: str,
     *test_toggles,
 ):
-    """Generator: yielded (summary, logs, table) bei jedem Schritt."""
+    """Generator: yielded (summary, logs, table, csv, charts...) bei jedem Schritt."""
     global _current_job_id
     _current_job_id = None
     live_log_lines: list[str] = []
 
+    _CHART_KEYS = [
+        "score_distribution", "flag_frequency", "monthly_pnl", "top_accounts",
+        "ertrag_aufwand_monthly", "volume_heatmap", "betrag_vs_score",
+        "kreditor_treemap", "zeitreihe_konto", "soll_haben_balance",
+    ]
+    _empty_charts = [gr.update(value=None) for _ in _CHART_KEYS]
+
     def log(msg: str) -> None:
         live_log_lines.append(f"[{_ts()}] {msg}")
 
-    def current_state(summary="", table=None, csv_path=None):
-        return summary, "\n".join(live_log_lines), table, gr.update(value=csv_path, visible=csv_path is not None)
+    def current_state(summary="", table=None, csv_path=None, charts=None):
+        base = (summary, "\n".join(live_log_lines), table, gr.update(value=csv_path, visible=csv_path is not None))
+        chart_updates = []
+        if charts:
+            for k in _CHART_KEYS:
+                chart_updates.append(gr.update(value=charts.get(k)))
+        else:
+            chart_updates = _empty_charts
+        return base + tuple(chart_updates)
 
     if file is None:
         yield current_state("Bitte eine Datei hochladen.")
@@ -273,7 +297,8 @@ def analyze_file(
 
         summary, display_df = _format_result(result, webhook_url)
         csv_path = _save_csv(display_df)
-        yield current_state(summary, display_df, csv_path)
+        charts = _build_charts(engine.df, result)
+        yield current_state(summary, display_df, csv_path, charts)
         return
 
     # ── Worker-Modus (Redis + Celery) ─────────────────────────
@@ -358,6 +383,7 @@ def analyze_file(
 
     summary, display_df = _format_result(result, webhook_url)
     csv_path = _save_csv(display_df)
+    # Worker-Modus: Charts nur möglich falls voller DataFrame verfügbar
     yield current_state(summary, display_df, csv_path)
 
 
@@ -470,6 +496,24 @@ with gr.Blocks(
             logs_output = gr.Textbox(
                 label="Live-Log", lines=25, interactive=False,
             )
+        with gr.Tab("📊 Visualisierungen"):
+            gr.Markdown("### Überblicks-Dashboards")
+            with gr.Row():
+                chart_score_dist = gr.Plot(label="Score-Verteilung")
+                chart_flag_freq  = gr.Plot(label="Flag-Häufigkeit")
+            with gr.Row():
+                chart_monthly_pnl = gr.Plot(label="Monatliche Betrags-Entwicklung")
+                chart_top_acc     = gr.Plot(label="Top-Konten nach Score")
+            with gr.Row():
+                chart_ertrag_aufw = gr.Plot(label="Ertrag vs. Aufwand")
+                chart_heatmap     = gr.Plot(label="Buchungsvolumen-Heatmap")
+            gr.Markdown("### Anomalie-Details")
+            with gr.Row():
+                chart_scatter     = gr.Plot(label="Betrag vs. Score")
+                chart_treemap     = gr.Plot(label="Kreditor-Treemap")
+            with gr.Row():
+                chart_zeitreihe   = gr.Plot(label="Zeitreihe (Top-Konto)")
+                chart_sh_balance  = gr.Plot(label="Soll/Haben-Balance")
 
     # ── Event: File-Upload → Validierung ──────────────────────
     file_input.change(
@@ -487,7 +531,12 @@ with gr.Blocks(
             prefix_ignore_input,
             *test_checkboxes,
         ],
-        outputs=[summary_output, logs_output, table_output, export_file],
+        outputs=[
+            summary_output, logs_output, table_output, export_file,
+            chart_score_dist, chart_flag_freq, chart_monthly_pnl, chart_top_acc,
+            chart_ertrag_aufw, chart_heatmap, chart_scatter, chart_treemap,
+            chart_zeitreihe, chart_sh_balance,
+        ],
     )
 
     cancel_btn.click(

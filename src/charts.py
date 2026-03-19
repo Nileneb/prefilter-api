@@ -1,0 +1,353 @@
+"""
+Buchungs-Anomalie Pre-Filter — Plotly-Visualisierungen
+
+Erzeugt Überblicks- und Detail-Charts aus dem Engine-DataFrame.
+
+Public API:
+    ChartBuilder(df, result) → .all_charts() → dict[str, go.Figure]
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+
+
+def _kontoklasse(konto_soll: pd.Series) -> pd.Series:
+    """Bestimmt Kontoklasse: Ertrag (40000–59999), Aufwand (60000–79999), Bestand (0–39999)."""
+    num = pd.to_numeric(
+        konto_soll.astype(str).str.strip().str.replace(r"\D", "", regex=True),
+        errors="coerce",
+    )
+    klasse = pd.Series("Bestand", index=konto_soll.index)
+    klasse = klasse.where(~((num >= 40000) & (num < 60000)), "Ertrag")
+    klasse = klasse.where(~((num >= 60000) & (num < 80000)), "Aufwand")
+    return klasse
+
+
+class ChartBuilder:
+    """Baut Plotly-Charts aus dem DataFrame nach dem Engine-Run."""
+
+    def __init__(self, df: pd.DataFrame, result: dict):
+        self.df = df
+        self.result = result
+
+    # ── Phase 1: Überblicks-Dashboards ────────────────────────
+
+    def score_distribution(self) -> go.Figure:
+        """Histogramm der Anomaly-Scores aller Buchungen."""
+        scores = self.df["_score"]
+        threshold = self.result["statistics"].get("avg_score", 2.0)
+        fig = px.histogram(
+            scores, nbins=50,
+            labels={"value": "Anomaly Score", "count": "Anzahl"},
+            title="Anomaly-Score-Verteilung",
+        )
+        fig.update_layout(showlegend=False, bargap=0.05)
+        fig.add_vline(
+            x=threshold, line_dash="dash", line_color="red",
+            annotation_text=f"Ø {threshold:.2f}",
+        )
+        return fig
+
+    def flag_frequency(self) -> go.Figure:
+        """Horizontales Balkendiagramm der Flag-Häufigkeiten."""
+        counts = self.result["statistics"].get("flag_counts", {})
+        # Nur Flags mit > 0 Treffern anzeigen
+        filtered = {k: v for k, v in counts.items() if v > 0}
+        if not filtered:
+            return _empty_figure("Keine Flags ausgelöst")
+        names = list(filtered.keys())
+        values = list(filtered.values())
+        # Sortiert nach Häufigkeit
+        pairs = sorted(zip(names, values), key=lambda x: x[1])
+        names, values = zip(*pairs)
+        fig = px.bar(
+            x=list(values), y=list(names), orientation="h",
+            labels={"x": "Anzahl", "y": "Test"},
+            title="Flag-Häufigkeit",
+        )
+        fig.update_layout(showlegend=False)
+        return fig
+
+    def monthly_pnl(self) -> go.Figure:
+        """Monatliche Betrags-Entwicklung nach Kontoklasse (Linienchart)."""
+        df = self.df.copy()
+        if "_datum" not in df.columns or "_betrag" not in df.columns:
+            return _empty_figure("Keine Datums-/Betragsdaten")
+        df = df[df["_datum"].notna()].copy()
+        if df.empty:
+            return _empty_figure("Keine gültigen Datumswerte")
+
+        df["_monat"] = df["_datum"].dt.to_period("M").dt.to_timestamp()
+        df["_kontoklasse"] = _kontoklasse(df["konto_soll"])
+
+        agg = (
+            df.groupby(["_monat", "_kontoklasse"], observed=True)["_betrag"]
+            .sum()
+            .reset_index()
+        )
+        fig = px.line(
+            agg, x="_monat", y="_betrag", color="_kontoklasse",
+            labels={"_monat": "Monat", "_betrag": "Summe Betrag", "_kontoklasse": "Kontoklasse"},
+            title="Monatliche Betrags-Entwicklung nach Kontoklasse",
+        )
+        return fig
+
+    def top_accounts(self, n: int = 10) -> go.Figure:
+        """Top-N Konten nach durchschnittlichem Anomaly-Score."""
+        df = self.df
+        if "konto_soll" not in df.columns:
+            return _empty_figure("Keine Kontodaten")
+
+        konto_scores = (
+            df[df["_score"] > 0]
+            .groupby("konto_soll", observed=True)["_score"]
+            .agg(["mean", "count"])
+            .rename(columns={"mean": "avg_score", "count": "n_flagged"})
+            .sort_values("avg_score", ascending=False)
+            .head(n)
+            .reset_index()
+        )
+        if konto_scores.empty:
+            return _empty_figure("Keine Konten mit Anomalie-Score")
+
+        konto_scores = konto_scores.sort_values("avg_score")
+        fig = px.bar(
+            konto_scores, x="avg_score", y="konto_soll", orientation="h",
+            text="n_flagged",
+            labels={"avg_score": "Ø Anomaly Score", "konto_soll": "Konto", "n_flagged": "Flagged"},
+            title=f"Top-{n} Konten nach Anomalie-Score",
+        )
+        fig.update_traces(texttemplate="%{text} Buchungen", textposition="outside")
+        fig.update_layout(showlegend=False)
+        return fig
+
+    def ertrag_aufwand_monthly(self) -> go.Figure:
+        """Ertrag vs. Aufwand pro Monat (gruppiertes Balkendiagramm)."""
+        df = self.df.copy()
+        if "_datum" not in df.columns or "_betrag" not in df.columns:
+            return _empty_figure("Keine Datums-/Betragsdaten")
+        df = df[df["_datum"].notna()].copy()
+        if df.empty:
+            return _empty_figure("Keine gültigen Datumswerte")
+
+        df["_monat"] = df["_datum"].dt.to_period("M").dt.to_timestamp()
+        df["_kontoklasse"] = _kontoklasse(df["konto_soll"])
+
+        ea = df[df["_kontoklasse"].isin(["Ertrag", "Aufwand"])]
+        if ea.empty:
+            return _empty_figure("Keine Ertrags-/Aufwandskonten")
+
+        agg = (
+            ea.groupby(["_monat", "_kontoklasse"], observed=True)["_betrag"]
+            .sum()
+            .reset_index()
+        )
+        fig = px.bar(
+            agg, x="_monat", y="_betrag", color="_kontoklasse",
+            barmode="group",
+            labels={"_monat": "Monat", "_betrag": "Summe Betrag", "_kontoklasse": "Kontoklasse"},
+            title="Ertrag vs. Aufwand pro Monat",
+        )
+        return fig
+
+    def volume_heatmap(self) -> go.Figure:
+        """Buchungsvolumen-Heatmap (Wochentag × Monat)."""
+        df = self.df.copy()
+        if "_datum" not in df.columns:
+            return _empty_figure("Keine Datumsdaten")
+        df = df[df["_datum"].notna()].copy()
+        if df.empty:
+            return _empty_figure("Keine gültigen Datumswerte")
+
+        df["_wochentag"] = df["_datum"].dt.day_name()
+        df["_monat"] = df["_datum"].dt.to_period("M").astype(str)
+
+        pivot = df.groupby(["_wochentag", "_monat"]).size().reset_index(name="count")
+
+        day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_labels = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+        pivot["_wochentag"] = pd.Categorical(pivot["_wochentag"], categories=day_order, ordered=True)
+        pivot = pivot.sort_values("_wochentag")
+
+        fig = px.density_heatmap(
+            pivot, x="_monat", y="_wochentag", z="count",
+            labels={"_monat": "Monat", "_wochentag": "Wochentag", "count": "Buchungen"},
+            title="Buchungsvolumen (Wochentag × Monat)",
+            category_orders={"_wochentag": day_order},
+        )
+        fig.update_yaxes(ticktext=day_labels, tickvals=day_order)
+        return fig
+
+    # ── Phase 2: Anomalie-Detail-Charts ───────────────────────
+
+    def betrag_vs_score(self) -> go.Figure:
+        """Scatter: Betrag vs. Anomaly-Score, Farbe = höchstes Flag."""
+        df = self.df
+        flagged = df[df["_score"] > 0].copy()
+        if flagged.empty:
+            return _empty_figure("Keine geflaggten Buchungen")
+
+        # Bestimme das gewichtigste Flag pro Buchung
+        flag_cols = [c for c in df.columns if c.startswith("flag_")]
+        if flag_cols:
+            flagged["_top_flag"] = flagged[flag_cols].idxmax(axis=1).str.replace("flag_", "", regex=False)
+        else:
+            flagged["_top_flag"] = "unbekannt"
+
+        fig = px.scatter(
+            flagged, x="_abs", y="_score", color="_top_flag",
+            labels={"_abs": "Betrag (abs.)", "_score": "Anomaly Score", "_top_flag": "Top Flag"},
+            title="Betrag vs. Anomaly Score",
+            opacity=0.6,
+        )
+        fig.update_layout(legend_title_text="Flag")
+        return fig
+
+    def kreditor_treemap(self) -> go.Figure:
+        """Treemap: Volumen pro Kreditor, Farbe = Anomaly-Score."""
+        df = self.df
+        if "kreditor" not in df.columns:
+            return _empty_figure("Keine Kreditordaten")
+
+        kred = (
+            df[df["kreditor"].astype(str).str.strip() != ""]
+            .groupby("kreditor", observed=True)
+            .agg(summe=("_abs", "sum"), avg_score=("_score", "mean"), count=("_abs", "count"))
+            .reset_index()
+        )
+        kred = kred[kred["count"] >= 2].nlargest(30, "summe")
+        if kred.empty:
+            return _empty_figure("Keine Kreditoren mit >= 2 Buchungen")
+
+        fig = px.treemap(
+            kred, path=["kreditor"], values="summe", color="avg_score",
+            color_continuous_scale="RdYlGn_r",
+            labels={"summe": "Gesamtbetrag", "avg_score": "Ø Score"},
+            title="Top-30 Kreditoren (Volumen & Anomalie-Score)",
+        )
+        return fig
+
+    def zeitreihe_konto(self, konto: str | None = None) -> go.Figure:
+        """Zeitreihe für ein einzelnes Konto mit Anomalie-Markierungen."""
+        df = self.df
+        if konto is None:
+            # Wähle das Konto mit dem höchsten avg Score
+            top = (
+                df[df["_score"] > 0]
+                .groupby("konto_soll", observed=True)["_score"]
+                .mean()
+                .idxmax()
+            )
+            konto = str(top) if pd.notna(top) else None
+        if konto is None:
+            return _empty_figure("Kein Konto mit Anomalien")
+
+        sub = df[df["konto_soll"].astype(str) == str(konto)].copy()
+        if sub.empty or "_datum" not in sub.columns:
+            return _empty_figure(f"Keine Daten für Konto {konto}")
+
+        sub = sub[sub["_datum"].notna()].sort_values("_datum")
+        fig = px.line(
+            sub, x="_datum", y="_betrag",
+            title=f"Zeitreihe Konto {konto}",
+            labels={"_datum": "Datum", "_betrag": "Betrag"},
+        )
+        anomalies = sub[sub["_score"] > 0]
+        if not anomalies.empty:
+            fig.add_trace(go.Scatter(
+                x=anomalies["_datum"], y=anomalies["_betrag"],
+                mode="markers", marker=dict(color="red", size=8, symbol="x"),
+                name="Anomalie",
+            ))
+        return fig
+
+    def soll_haben_balance(self) -> go.Figure:
+        """Soll/Haben-Balance pro Top-Konto (divergierendes Balkendiagramm)."""
+        df = self.df
+        if "soll_haben" not in df.columns or "konto_soll" not in df.columns:
+            return _empty_figure("Soll/Haben-Spalte nicht verfügbar")
+
+        sh = df["soll_haben"].astype(str).str.strip().str.upper()
+        has_sh = sh.isin(["S", "SOLL", "H", "HABEN"])
+        if not has_sh.any():
+            return _empty_figure("Keine gültigen Soll/Haben-Werte")
+
+        work = df[has_sh].copy()
+        work["_sh"] = sh[has_sh]
+        work["_is_soll"] = work["_sh"].isin(["S", "SOLL"])
+
+        soll = (
+            work[work["_is_soll"]]
+            .groupby("konto_soll", observed=True)["_abs"]
+            .sum()
+            .rename("Soll")
+        )
+        haben = (
+            work[~work["_is_soll"]]
+            .groupby("konto_soll", observed=True)["_abs"]
+            .sum()
+            .rename("Haben")
+        )
+
+        balance = pd.concat([soll, haben], axis=1).fillna(0)
+        balance["diff"] = (balance["Soll"] - balance["Haben"]).abs()
+        top = balance.nlargest(15, "diff").reset_index()
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            y=top["konto_soll"].astype(str), x=-top["Haben"],
+            name="Haben", orientation="h", marker_color="#2ca02c",
+        ))
+        fig.add_trace(go.Bar(
+            y=top["konto_soll"].astype(str), x=top["Soll"],
+            name="Soll", orientation="h", marker_color="#d62728",
+        ))
+        fig.update_layout(
+            title="Soll/Haben-Balance (Top-15 Konten nach Differenz)",
+            barmode="relative",
+            xaxis_title="Betrag",
+            yaxis_title="Konto",
+        )
+        return fig
+
+    # ── Aggregator ────────────────────────────────────────────
+
+    def all_charts(self) -> dict[str, go.Figure]:
+        """Gibt alle Charts als Dict zurück."""
+        charts = {}
+        methods = [
+            ("score_distribution", self.score_distribution),
+            ("flag_frequency", self.flag_frequency),
+            ("monthly_pnl", self.monthly_pnl),
+            ("top_accounts", self.top_accounts),
+            ("ertrag_aufwand_monthly", self.ertrag_aufwand_monthly),
+            ("volume_heatmap", self.volume_heatmap),
+            ("betrag_vs_score", self.betrag_vs_score),
+            ("kreditor_treemap", self.kreditor_treemap),
+            ("zeitreihe_konto", self.zeitreihe_konto),
+            ("soll_haben_balance", self.soll_haben_balance),
+        ]
+        for name, method in methods:
+            try:
+                charts[name] = method()
+            except Exception:
+                charts[name] = _empty_figure(f"Fehler bei {name}")
+        return charts
+
+
+def _empty_figure(message: str) -> go.Figure:
+    """Erzeugt eine leere Plotly-Figure mit Hinweistext."""
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message, xref="paper", yref="paper",
+        x=0.5, y=0.5, showarrow=False, font=dict(size=16, color="gray"),
+    )
+    fig.update_layout(
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        plot_bgcolor="white",
+    )
+    return fig
