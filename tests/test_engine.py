@@ -135,7 +135,7 @@ class TestEngineZScore:
         df = _make_df(
             datum=["2024-01-15"] * 100,
             betrag=betraege,
-            konto_soll=["4711"] * 100,
+            konto_soll=["42000"] * 100,   # Ertragskonto (40000–59999)
             konto_haben=["1200"] * 100,
             buchungstext=["Normal"] * 99 + ["Extrem"],
             belegnummer=[f"{i:04d}" for i in range(100)],
@@ -145,6 +145,40 @@ class TestEngineZScore:
         engine._stats()
         engine._t01_zscore()
         assert engine.flag_counts["BETRAG_ZSCORE"] >= 1
+
+    def test_bestand_konto_not_flagged(self):
+        """Bestandskonten (0–39999) werden von Betrags-Tests NICHT analysiert."""
+        betraege = ["100,00"] * 99 + ["100000,00"]
+        df = _make_df(
+            datum=["2024-01-15"] * 100,
+            betrag=betraege,
+            konto_soll=["1200"] * 100,   # Bestandskonto
+            konto_haben=["4200"] * 100,
+            buchungstext=["Normal"] * 99 + ["Extrem"],
+            belegnummer=[f"{i:04d}" for i in range(100)],
+            erfasser=["User"] * 100,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t01_zscore()
+        assert engine.flag_counts["BETRAG_ZSCORE"] == 0
+
+    def test_kostenrechnung_not_flagged(self):
+        """Kostenrechnungskonten (≥80000) werden von Betrags-Tests NICHT analysiert."""
+        betraege = ["100,00"] * 99 + ["100000,00"]
+        df = _make_df(
+            datum=["2024-01-15"] * 100,
+            betrag=betraege,
+            konto_soll=["82000"] * 100,   # Kostenrechnung
+            konto_haben=["1200"] * 100,
+            buchungstext=["Normal"] * 99 + ["Extrem"],
+            belegnummer=[f"{i:04d}" for i in range(100)],
+            erfasser=["User"] * 100,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t01_zscore()
+        assert engine.flag_counts["BETRAG_ZSCORE"] == 0
 
 
 class TestEngineNearDuplicate:
@@ -316,6 +350,65 @@ class TestEngineBelegKreditorDuplikat:
         assert engine.flag_counts["BELEG_KREDITOR_DUPLIKAT"] == 0
 
 
+class TestEngineKontoBetragAnomalie:
+    def test_ertrag_5pct_threshold(self):
+        """Ertragskonto mit >5% Abweichung vom Konto-Durchschnitt → flaggen."""
+        # 9 Buchungen à 1000 + 1 Buchung à 1200 (20% über Schnitt)
+        # mean = (9*1000 + 1200) / 10 = 1020
+        # 1200: |1200-1020|/1020 = 17.6% > 5% → flagged
+        # 1000: |1000-1020|/1020 = 1.96% < 5% → not flagged
+        df = _make_df(
+            datum=["2024-01-15"] * 10,
+            betrag=["1000,00"] * 9 + ["1200,00"],
+            konto_soll=["42000"] * 10,   # Ertragskonto
+            konto_haben=["1200"] * 10,
+            buchungstext=["Umsatz"] * 10,
+            belegnummer=[f"{i:04d}" for i in range(10)],
+            erfasser=["User"] * 10,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t18_konto_betrag_anomalie()
+        assert engine.flag_counts["KONTO_BETRAG_ANOMALIE"] >= 1
+        # Der Ausreißer (1200) muss geflaggt sein
+        assert engine.df.iloc[-1]["flag_KONTO_BETRAG_ANOMALIE"]
+
+    def test_aufwand_20pct_threshold(self):
+        """Aufwandskonto mit >20% Abweichung → flaggen; <20% → nicht."""
+        # 9 Buchungen à 1000 + 1 Buchung à 1400 (40% über Schnitt)
+        # mean = (9*1000 + 1400) / 10 = 1040
+        # 1400: |1400-1040|/1040 = 34.6% > 20% → flagged
+        df = _make_df(
+            datum=["2024-01-15"] * 10,
+            betrag=["1000,00"] * 9 + ["1400,00"],
+            konto_soll=["65000"] * 10,   # Aufwandskonto
+            konto_haben=["1200"] * 10,
+            buchungstext=["Aufwand"] * 10,
+            belegnummer=[f"{i:04d}" for i in range(10)],
+            erfasser=["User"] * 10,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t18_konto_betrag_anomalie()
+        assert engine.flag_counts["KONTO_BETRAG_ANOMALIE"] >= 1
+
+    def test_bestand_not_analyzed(self):
+        """Bestandskonten werden von KONTO_BETRAG_ANOMALIE nicht analysiert."""
+        df = _make_df(
+            datum=["2024-01-15"] * 10,
+            betrag=["1000,00"] * 9 + ["100000,00"],
+            konto_soll=["1200"] * 10,    # Bestandskonto
+            konto_haben=["4200"] * 10,
+            buchungstext=["Buchung"] * 10,
+            belegnummer=[f"{i:04d}" for i in range(10)],
+            erfasser=["User"] * 10,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t18_konto_betrag_anomalie()
+        assert engine.flag_counts["KONTO_BETRAG_ANOMALIE"] == 0
+
+
 class TestEngineLeererBuchungstext:
     def test_empty_text_flagged(self):
         df = _make_df(buchungstext=[""])
@@ -420,8 +513,11 @@ class TestEngineBuchungstextPeriode:
 
 class TestEngineMonatsEntwicklung:
     def test_spike_month_flagged(self):
-        """Ausreißer-Monat auf GuV-Konto → alle Buchungen dieses Monats flaggen."""
-        # 9 normale Monate (Z = N/sqrt(N+1) = 9/√10 ≈ 2.85 > 2.5)
+        """Ausreißer-Monat auf Aufwandskonto (>20% Abweichung) → flaggen."""
+        # 9 normale Monate à 3000 (3×1000) + 1 Monat à 6000 (3×2000)
+        # mean = (9*3000 + 6000) / 10 = 3300
+        # Normal: |3000-3300|/3300 = 9.1% < 20% → nicht geflaggt
+        # Spike:  |6000-3300|/3300 = 81.8% > 20% → geflaggt
         dates    = []
         betraege = []
         for m in range(1, 10):           # Monate 1–9 normal
@@ -430,13 +526,44 @@ class TestEngineMonatsEntwicklung:
                 betraege.append("1000,00")
         for _ in range(3):               # Monat 11 als Ausreißer
             dates.append("2024-11-15")
-            betraege.append("50000,00")
+            betraege.append("2000,00")
 
         n  = len(dates)
         df = _make_df(
             datum=dates,
             betrag=betraege,
-            konto_soll=["65000"] * n,   # Aufwandskonto
+            konto_soll=["65000"] * n,   # Aufwandskonto (20% Toleranz)
+            konto_haben=["1200"] * n,
+            buchungstext=["Buchung"] * n,
+            belegnummer=[f"{i:04d}" for i in range(n)],
+            erfasser=["User"] * n,
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t25_monats_entwicklung()
+        assert engine.flag_counts["MONATS_ENTWICKLUNG"] >= 1
+
+    def test_ertrag_5pct_threshold(self):
+        """Ertragskonto braucht nur >5% Abweichung für Flag."""
+        # 5 Monate à 50000 (2×25000) + 1 Monat à 54000 (2×27000) = 12 Buchungen
+        # mean = (5*50000 + 54000) / 6 = 50667
+        # Normal: |50000-50667|/50667 = 1.3% < 5% → OK
+        # Spike:  |54000-50667|/50667 = 6.6% > 5% → geflaggt
+        dates    = []
+        betraege = []
+        for m in range(1, 6):            # Monate 1–5 normal
+            for _ in range(2):
+                dates.append(f"2024-{m:02d}-15")
+                betraege.append("25000,00")
+        for _ in range(2):               # Monat 6 leicht erhöht
+            dates.append("2024-06-15")
+            betraege.append("27000,00")
+
+        n  = len(dates)
+        df = _make_df(
+            datum=dates,
+            betrag=betraege,
+            konto_soll=["42000"] * n,   # Ertragskonto (5% Toleranz)
             konto_haben=["1200"] * n,
             buchungstext=["Buchung"] * n,
             belegnummer=[f"{i:04d}" for i in range(n)],

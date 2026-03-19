@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.accounting import kontoklasse, ERTRAG_MIN, AUFWAND_MAX
+from src.accounting import kontoklasse
 from src.config import AnalysisConfig
 from src.tests.base import AnomalyTest, EngineStats
 
@@ -31,7 +31,7 @@ class MonatsEntwicklung(AnomalyTest):
             return 0
 
         # GuV-Konten (Ertrag + Aufwand)
-        kl = kontoklasse(subset["konto_soll"])
+        kl = df.loc[has_konto_date, "_kontoklasse"] if "_kontoklasse" in df.columns else kontoklasse(subset["konto_soll"])
         pnl_mask = kl.isin(["Ertrag", "Aufwand"])
         pnl      = subset.loc[pnl_mask].copy()
 
@@ -39,6 +39,7 @@ class MonatsEntwicklung(AnomalyTest):
             return 0
 
         pnl["_ym"] = pnl["_datum"].dt.to_period("M").astype(str)
+        pnl["_kl"] = kl[pnl_mask]
 
         monthly = (
             pnl.groupby(["konto_soll", "_ym"], observed=True)["_abs"]
@@ -47,25 +48,34 @@ class MonatsEntwicklung(AnomalyTest):
         )
         konto_stats = (
             monthly.groupby("konto_soll", observed=True)["monatssumme"]
-            .agg(ks_mean="mean", ks_std="std", ks_count="count")
+            .agg(ks_mean="mean", ks_count="count")
             .reset_index()
         )
         konto_stats = konto_stats[
-            (konto_stats["ks_count"] >= config.monats_entwicklung_min_monate)
-            & (konto_stats["ks_std"] > 0)
+            konto_stats["ks_count"] >= config.monats_entwicklung_min_monate
         ]
 
         if konto_stats.empty:
             return 0
 
+        # Kontoklasse pro Konto
+        konto_kl = pnl.groupby("konto_soll", observed=True)["_kl"].first().reset_index()
+        konto_stats = konto_stats.merge(konto_kl, on="konto_soll")
+
+        # Differenzierte %-Abweichungsgrenzen (5% Ertrag / 20% Aufwand)
+        konto_stats["max_pct"] = konto_stats["_kl"].map({
+            "Ertrag": config.ertrag_abweichung_pct,
+            "Aufwand": config.aufwand_abweichung_pct,
+        })
+
         with_stats = monthly.merge(
-            konto_stats[["konto_soll", "ks_mean", "ks_std"]], on="konto_soll"
+            konto_stats[["konto_soll", "ks_mean", "max_pct"]], on="konto_soll"
         )
-        with_stats["zscore"] = (
-            (with_stats["monatssumme"] - with_stats["ks_mean"]) / with_stats["ks_std"]
+        with_stats["pct_dev"] = (
+            (with_stats["monatssumme"] - with_stats["ks_mean"]).abs() / with_stats["ks_mean"]
         )
         outliers  = with_stats[
-            with_stats["zscore"].abs() > config.monats_entwicklung_zscore
+            with_stats["pct_dev"] > with_stats["max_pct"]
         ]
         spike_set = set(zip(outliers["konto_soll"], outliers["_ym"]))
 

@@ -7,8 +7,7 @@ Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Expo
 - **Beleg-Ebene**: Buchungszeilen desselben Belegs (DVBelegnummer) werden als zusammengehörig erkannt; Duplikat-Tests ignorieren beleg-interne Zeilen
 - **Storno-Ausschluss**: Storno-Buchungen (Generalumgekehrt ≠ leer) werden aus 9 von 13 Tests automatisch ausgeschlossen, um False-Positives zu eliminieren
 - **Generalumgekehrt-Fix**: Das Feld enthält DVBelegnummern des Storno-Gegenbelegs (nicht boolean) — jeder nicht-leere Wert = Storno
-- **Kontoklasse Kostenrechnung**: Kontonummern ≥ 80000 werden als "Kostenrechnung" klassifiziert (statt fälschlich "Bestand")
-- **float64-Präzision**: `_betrag`/`_abs` nutzen float64 statt float32 (keine Rundungsartefakte mehr)
+- **Kontoklasse Kostenrechnung**: Kontonummern ≥ 80000 werden als "Kostenrechnung" klassifiziert (statt fälschlich "Bestand")- **Kontoklassenspezifische Abweichungsgrenzen**: Betrags-Tests (BETRAG_ZSCORE, BETRAG_IQR, KONTO_BETRAG_ANOMALIE) analysieren NUR Ertrags- und Aufwandskonten. KONTO_BETRAG_ANOMALIE und MONATS_ENTWICKLUNG nutzen differenzierte %-Abweichungsgrenzen: **5% für Ertragskonten**, **20% für Aufwandskonten**- **float64-Präzision**: `_betrag`/`_abs` nutzen float64 statt float32 (keine Rundungsartefakte mehr)
 - **Erweiterte Spalten-Aliase**: DVBelegnummer, DVBuchungsnummer, InterneBelegnummer, Mandant, Belegart u.a.
 
 ---
@@ -139,12 +138,14 @@ Die Eingabedaten stammen typischerweise aus Diamant/4 Finanzbuchhaltung. Jede Ze
 
 ### Kontoklassen (src/accounting.py)
 
-| Kontoklasse        | Bereich       |
-| ------------------ | ------------- |
-| Bestand            | 0 – 39 999   |
-| Ertrag             | 40 000 – 59 999 |
-| Aufwand            | 60 000 – 79 999 |
-| Kostenrechnung     | ≥ 80 000     |
+| Kontoklasse        | Bereich       | Betrags-Tests | Abweichungsgrenze |
+| ------------------ | ------------- | ------------- | ----------------- |
+| Bestand            | 0 – 39 999   | ✗ (ausgeschlossen) | —             |
+| Ertrag             | 40 000 – 59 999 | ✓           | **5%**            |
+| Aufwand            | 60 000 – 79 999 | ✓           | **20%**           |
+| Kostenrechnung     | ≥ 80 000     | ✗ (ausgeschlossen) | —             |
+
+> **Wichtig:** Betrags-Anomalie-Tests (BETRAG_ZSCORE, BETRAG_IQR, KONTO_BETRAG_ANOMALIE) analysieren **nur** Ertrags- und Aufwandskonten. Bestandskonten und Kostenrechnungskonten werden komplett ausgeschlossen. KONTO_BETRAG_ANOMALIE und MONATS_ENTWICKLUNG nutzen differenzierte %-Abweichungsgrenzen pro Kontoklasse.
 
 ---
 
@@ -212,9 +213,9 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 
 | #  | Flag                      | Gewicht | Kritisch | Beschreibung                                                               |
 | -- | ------------------------- | ------- | -------- | -------------------------------------------------------------------------- |
-| 01 | `BETRAG_ZSCORE`           | 2.0     | ✓        | Betrag > 2,5 Standardabweichungen vom Mittelwert (je Kontoklasse)         |
-| 02 | `BETRAG_IQR`              | 1.5     |          | Betrag oberhalb des IQR-Fence (Q3 + 3,0 × IQR, je Kontoklasse)           |
-| 03 | `KONTO_BETRAG_ANOMALIE`   | 2.0     | ✓        | Betrag ist Ausreißer relativ zur Kontonorm (Z-Score auf Kontoebene)       |
+| 01 | `BETRAG_ZSCORE`           | 2.0     | ✓        | Betrag > 2,5 Standardabweichungen vom Mittelwert (NUR Ertrags-/Aufwandskonten) |
+| 02 | `BETRAG_IQR`              | 1.5     |          | Betrag oberhalb des IQR-Fence (Q3 + 3,0 × IQR, NUR Ertrags-/Aufwandskonten)  |
+| 03 | `KONTO_BETRAG_ANOMALIE`   | 2.0     | ✓        | Betrag weicht > X% vom Kontodurchschnitt ab (5% Ertrag / 20% Aufwand)         |
 | 04 | `NEAR_DUPLICATE`          | 2.0     | ✓        | Gleicher Betrag + Konten, Buchungsdatum innerhalb von 3 Tagen             |
 | 05 | `DOPPELTE_BELEGNUMMER`    | 2.0     | ✓        | Gleiche Belegnummer taucht mehrfach auf                                   |
 | 06 | `BELEG_KREDITOR_DUPLIKAT` | 2.5     | ✓        | Gleiche Belegnummer + gleicher Kreditor (mögliche doppelte Zahlung)        |
@@ -223,7 +224,7 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 | 09 | `RECHNUNGSDATUM_PERIODE`  | 1.5     |          | Erfassungsmonat weicht vom Buchungsmonat ab (Periodenverschiebung)        |
 | 10 | `BUCHUNGSTEXT_PERIODE`    | 1.0     |          | Periodenangabe im Buchungstext stimmt nicht mit Buchungsdatum überein     |
 | 11 | `NEUER_KREDITOR_HOCH`     | 2.5     | ✓        | Kreditor mit ≤ 2 Buchungen und hohem Betrag (> μ + 1,5σ)                 |
-| 12 | `MONATS_ENTWICKLUNG`      | 1.5     |          | Monatlicher Betrag auf GuV-Konto ist Z-Score-Ausreißer                    |
+| 12 | `MONATS_ENTWICKLUNG`      | 1.5     |          | Monatsbetrag weicht > X% vom Kontodurchschnitt ab (5% Ertrag / 20% Aufwand)   |
 | 13 | `FEHLENDE_MONATSBUCHUNG`  | 1.0     |          | Konto hat regulär monatliche Buchungen, fehlt aber in einem Monat         |
 
 **Kritische Flags** führen dazu, dass die Buchung **immer** im Output erscheint, unabhängig vom Score-Schwellenwert.
