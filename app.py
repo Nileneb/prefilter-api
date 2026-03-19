@@ -23,6 +23,7 @@ from celery import Celery
 
 from src.webhook import push_to_langdock
 from src.config import AnalysisConfig
+from src.file_store import store_upload, store_result, list_uploads
 from src.logging_config import setup_logging, get_logger
 from src.validator import (
     ALL_TEST_NAMES, TEST_CATEGORIES,
@@ -84,6 +85,20 @@ def _save_csv(df: pd.DataFrame) -> str | None:
     path = os.path.join("/tmp", f"verdaechtige_buchungen_{ts}.csv")
     df.to_csv(path, index=False, sep=";", encoding="utf-8-sig")
     return path
+
+
+def _detect_mandant(df: pd.DataFrame, filepath: str) -> str:
+    """Erkennt Mandanten-ID aus Daten oder Dateiname."""
+    import re as _re
+    if "mandant" in df.columns:
+        mandant_vals = df["mandant"].astype(str).str.strip()
+        mandant_vals = mandant_vals[mandant_vals != ""]
+        if not mandant_vals.empty:
+            return mandant_vals.mode().iloc[0]
+    match = _re.search(r"(\d{2,6})", os.path.basename(filepath))
+    if match:
+        return match.group(1)
+    return "unknown"
 
 
 def _build_charts(df: pd.DataFrame, result: dict) -> dict:
@@ -291,6 +306,15 @@ def analyze_file(
 
         summary, display_df = _format_result(result, webhook_url)
         csv_path = _save_csv(display_df)
+
+        # Upload + Ergebnis persistent speichern
+        try:
+            mandant_id = _detect_mandant(df, filepath)
+            store_upload(mandant_id, filepath, os.path.basename(filepath))
+            store_result(mandant_id, os.path.basename(filepath), result, display_df)
+            log(f"📁 Upload + Ergebnis gespeichert unter data/uploads/{mandant_id}/")
+        except Exception as e:
+            log(f"⚠️ File-Store fehlgeschlagen: {e}")
 
         # Engine-Daten für on-demand Charts speichern
         _last_engine_df = engine.df
@@ -669,6 +693,12 @@ with gr.Blocks(
                     btn_sh_balance = gr.Button("▶ Soll/Haben-Balance", size="sm")
                     chart_sh_balance = gr.Plot(label="Soll/Haben-Balance")
 
+        with gr.Tab("📁 History"):
+            gr.Markdown("### Analyse-Verlauf")
+            history_mandant = gr.Textbox(label="Mandant-ID", value="150")
+            history_btn = gr.Button("🔄 Laden")
+            history_table = gr.Dataframe(label="Gespeicherte Analysen", interactive=False)
+
     # ── Event: File-Upload → Validierung ──────────────────────
     file_input.change(
         fn=validate_file,
@@ -694,6 +724,19 @@ with gr.Blocks(
         fn=cancel_analysis,
         inputs=[],
         outputs=[summary_output],
+    )
+
+    # ── Event: History laden ──────────────────────────────────
+    def load_history(mandant_id):
+        uploads = list_uploads(mandant_id.strip())
+        if not uploads:
+            return pd.DataFrame({"Hinweis": ["Keine gespeicherten Analysen gefunden"]})
+        return pd.DataFrame(uploads)
+
+    history_btn.click(
+        fn=load_history,
+        inputs=[history_mandant],
+        outputs=[history_table],
     )
 
     # ── Events: Einzelne Charts on-demand ─────────────────────

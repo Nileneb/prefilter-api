@@ -15,3 +15,7 @@ venv.bak/
 anleitung_file_logging.txt
 logs/
 run_*
+tests/fixtures/*.csv
+tests/fixtures/*.xlsx
+tests/fixtures/*.xls
+data/uploads/

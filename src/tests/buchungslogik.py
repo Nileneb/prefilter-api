@@ -118,6 +118,15 @@ class RechnungsdatumPeriode(AnomalyTest):
         ).abs()
         mask_inner = diff_months > 2
 
+        self.log(
+            "Monats-Differenzen",
+            mean_diff=round(float(diff_months[mask_inner].mean()), 1) if mask_inner.any() else 0,
+            max_diff=int(diff_months[mask_inner].max()) if mask_inner.any() else 0,
+            count_gt_6m=int((diff_months > 6).sum()),
+            count_gt_2m=int(mask_inner.sum()),
+            total_pairs=int(len(diff_months)),
+        )
+
         flagged_idx = buch_period.index[mask_inner]
         df.loc[flagged_idx, f"flag_{self.name}"] = True
         return len(flagged_idx)

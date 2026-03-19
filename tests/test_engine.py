@@ -299,39 +299,39 @@ class TestEngineDoppelteBelegnummer:
 
 class TestEngineBelegKreditorDuplikat:
     def test_same_beleg_same_kreditor(self):
-        """Gleiche Belegnr. + gleicher Kreditor + gleicher Betrag (>=3, verschiedene Belege) → flaggen."""
+        """Gleiche Belegnr. + gleicher Kreditor + gleicher Betrag (>=4, verschiedene Belege) → flaggen."""
+        df = _make_df(
+            datum=["2024-01-15", "2024-01-16", "2024-01-17", "2024-01-18"],
+            betrag=["500,00", "500,00", "500,00", "500,00"],
+            belegnummer=["INV-001", "INV-001", "INV-001", "INV-001"],
+            kreditor=["Lieferant A", "Lieferant A", "Lieferant A", "Lieferant A"],
+            konto_soll=["4711", "4720", "4730", "4740"],
+            konto_haben=["1200", "1200", "1200", "1200"],
+            buchungstext=["Einkauf", "Einkauf 2", "Einkauf 3", "Einkauf 4"],
+            erfasser=["User", "User", "User", "User"],
+            dvbelegnummer=["DV-10", "DV-11", "DV-12", "DV-13"],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t14_beleg_kreditor_duplikat()
+        assert engine.flag_counts["BELEG_KREDITOR_DUPLIKAT"] == 4
+
+    def test_same_kreditor_amount_within_3days(self):
+        """Gleicher Kreditor + Betrag + ≤3 Tage + ≥3 versch. Belegnummern → flaggen."""
         df = _make_df(
             datum=["2024-01-15", "2024-01-16", "2024-01-17"],
-            betrag=["500,00", "500,00", "500,00"],
-            belegnummer=["INV-001", "INV-001", "INV-001"],
-            kreditor=["Lieferant A", "Lieferant A", "Lieferant A"],
-            konto_soll=["4711", "4720", "4730"],
+            betrag=["1000,00", "1000,00", "1000,00"],
+            belegnummer=["INV-001", "INV-002", "INV-003"],
+            kreditor=["Lieferant B", "Lieferant B", "Lieferant B"],
+            konto_soll=["4711", "4711", "4711"],
             konto_haben=["1200", "1200", "1200"],
-            buchungstext=["Einkauf", "Einkauf 2", "Einkauf 3"],
+            buchungstext=["Rechnung", "Rechnung", "Rechnung"],
             erfasser=["User", "User", "User"],
-            dvbelegnummer=["DV-10", "DV-11", "DV-12"],
         )
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t14_beleg_kreditor_duplikat()
         assert engine.flag_counts["BELEG_KREDITOR_DUPLIKAT"] == 3
-
-    def test_same_kreditor_amount_within_3days(self):
-        """Gleicher Kreditor + Betrag + ≤3 Tage → flaggen."""
-        df = _make_df(
-            datum=["2024-01-15", "2024-01-17"],
-            betrag=["1000,00", "1000,00"],
-            belegnummer=["INV-001", "INV-002"],
-            kreditor=["Lieferant B", "Lieferant B"],
-            konto_soll=["4711", "4711"],
-            konto_haben=["1200", "1200"],
-            buchungstext=["Rechnung", "Rechnung"],
-            erfasser=["User", "User"],
-        )
-        engine = AnomalyEngine(df)
-        engine._stats()
-        engine._t14_beleg_kreditor_duplikat()
-        assert engine.flag_counts["BELEG_KREDITOR_DUPLIKAT"] == 2
 
     def test_same_kreditor_amount_beyond_3days_not_flagged(self):
         """Gleicher Kreditor + Betrag + >3 Tage → nicht flaggen."""
@@ -543,18 +543,18 @@ class TestEngineBuchungstextPeriode:
 
 class TestEngineMonatsEntwicklung:
     def test_spike_month_flagged(self):
-        """Ausreißer-Monat auf Aufwandskonto (>2.5σ über Mean) → flaggen."""
-        # 9 normale Monate à 3000 (3×1000) + 1 Monat à 15000 (3×5000)
-        # mean ≈ 4200, std ≈ 3794 → z(15000) ≈ 2.85 > 2.5 → flagged
+        """Ausreißer-Monat auf Aufwandskonto (>3.0σ über Mean) → flaggen."""
+        # 11 normale Monate à 3000 (3×1000) + 1 Monat à 30000 (3×10000)
+        # mean ≈ 5250, std ≈ 7794 → z(30000) ≈ 3.18 > 3.0 → flagged
         dates    = []
         betraege = []
-        for m in range(1, 10):           # Monate 1–9 normal
+        for m in range(1, 12):           # Monate 1–11 normal
             for _ in range(3):
                 dates.append(f"2024-{m:02d}-15")
                 betraege.append("1000,00")
-        for _ in range(3):               # Monat 11 als Ausreißer
-            dates.append("2024-11-15")
-            betraege.append("5000,00")
+        for _ in range(3):               # Monat 12 als Ausreißer
+            dates.append("2024-12-15")
+            betraege.append("10000,00")
 
         n  = len(dates)
         df = _make_df(

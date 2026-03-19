@@ -93,8 +93,8 @@ class AnalysisConfig(BaseModel):
 
     # ── Monats-Entwicklung ───────────────────────────────────
     monats_entwicklung_zscore: float = Field(
-        2.5, ge=1.0,
-        description="Z-Score-Grenze für MONATS_ENTWICKLUNG: Monatssumme > mean ± zscore×std → Flag (Standard: 2.5)",
+        3.0, ge=1.0,
+        description="Z-Score-Grenze für MONATS_ENTWICKLUNG: Monatssumme > mean ± zscore×std → Flag (Standard: 3.0)",
     )
     monats_entwicklung_min_monate: int = Field(
         3, ge=2,

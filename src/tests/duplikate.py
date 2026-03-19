@@ -355,7 +355,7 @@ class BelegKreditorDuplikat(AnomalyTest):
 
         # ── Reguläre Kreditoren ──
         regular_kb = _find_regular_keys(
-            df[has_all], ["kreditor", "_betrag"], reg_months,
+            df[has_all], ["kreditor", "_abs"], reg_months,
             logger=self.log, label="beleg_kred_regular",
         )
 
@@ -365,7 +365,7 @@ class BelegKreditorDuplikat(AnomalyTest):
         if has_all.any():
             sub = df.loc[has_all]
             grp_counts = sub.groupby(
-                ["belegnummer", "kreditor", "_betrag"], sort=False, observed=True
+                ["belegnummer", "kreditor", "_abs"], sort=False, observed=True
             )
             # Beleg-intern: Nur verschiedene _beleg_id's zählen
             has_beleg_id = "_beleg_id" in sub.columns
@@ -374,11 +374,11 @@ class BelegKreditorDuplikat(AnomalyTest):
             else:
                 grp_size = grp_counts.transform("size")
                 grp_size = grp_size.iloc[:, 0] if isinstance(grp_size, pd.DataFrame) else grp_size
-            dup_idx = grp_size.index[grp_size >= 3]
+            dup_idx = grp_size.index[grp_size >= 4]
             level1_raw = len(dup_idx)
 
             for idx in dup_idx:
-                kb = (str(df.at[idx, "kreditor"]).strip(), df.at[idx, "_betrag"])
+                kb = (str(df.at[idx, "kreditor"]).strip(), df.at[idx, "_abs"])
                 if kb in regular_kb:
                     level1_regular += 1
                 else:
@@ -405,7 +405,7 @@ class BelegKreditorDuplikat(AnomalyTest):
         level2_skipped_no_dates = 0
 
         for key, grp in df.loc[has_ka].groupby(
-            ["kreditor", "_betrag"], sort=False, observed=True
+            ["kreditor", "_abs"], sort=False, observed=True
         ):
             level2_groups += 1
             if len(grp) < 2 or len(grp) > max_grp:
@@ -414,7 +414,7 @@ class BelegKreditorDuplikat(AnomalyTest):
             if key in regular_kb:
                 level2_skipped_regular += 1
                 continue
-            if grp["belegnummer"].astype(str).str.strip().nunique() < 2:
+            if grp["belegnummer"].astype(str).str.strip().nunique() < 3:
                 level2_skipped_same_beleg += 1
                 continue
 

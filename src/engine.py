@@ -104,8 +104,10 @@ class AnomalyEngine:
             & (gu_str != "0")
         )
         txt = df["buchungstext"].astype(str).str.lower()
-        txt_storno = txt.str.contains(r"storno|korrektur|r[uü]ckbuchung", regex=True, na=False)
-        df["_is_storno"] = gu_storno | txt_storno
+        txt_storno = txt.str.contains(r"storno|stornierung|r[uü]ckbuchung|gutschrift.*storn", regex=True, na=False)
+        # "korrektur" nur bei negativem Betrag als Storno werten
+        txt_korrektur = txt.str.contains(r"\bkorrektur\b", regex=True, na=False) & (df["_betrag"] < 0)
+        df["_is_storno"] = gu_storno | txt_storno | txt_korrektur
 
         # _beleg_id: DVBelegnummer wenn vorhanden, sonst Fallback auf belegnummer
         if "dvbelegnummer" in df.columns:

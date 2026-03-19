@@ -42,5 +42,6 @@ python_functions = ["test_*"]
 markers = [
     "slow: Performance-Tests mit großen Datensätzen (500k Zeilen)",
     "integration: Integration-Tests die Redis/Celery voraussetzen",
+    "real: Tests mit echten Buchungsdaten (brauchen data/uploads/150/)",
 ]
-addopts = "-m 'not slow and not integration'"
+addopts = "-m 'not slow and not integration and not real'"
