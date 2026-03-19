@@ -21,6 +21,8 @@ import pandas as pd
 
 from src.accounting import kontoklasse, compute_signed_betrag
 from src.config import AnalysisConfig
+from src.embeddings import HAS_EMBEDDINGS, get_embedder
+from src.kreditor_clustering import cluster_kreditors
 from src.logging_config import get_logger
 from src.parser import COLUMN_ALIASES, parse_german_number_series, parse_date_series
 from src.tests.base import EngineStats
@@ -29,6 +31,7 @@ from src.tests.duplikate import get_tests as get_duplikate_tests
 from src.tests.buchungslogik import get_tests as get_buchungslogik_tests
 from src.tests.kreditor import get_tests as get_kreditor_tests
 from src.tests.zeitreihe import get_tests as get_zeitreihe_tests
+from src.tests.isolation_anomaly import get_tests as get_isolation_tests
 from src import history
 
 logger = get_logger("prefilter.engine")
@@ -41,6 +44,7 @@ _ALL_TESTS = (
     + get_buchungslogik_tests()
     + get_kreditor_tests()
     + get_zeitreihe_tests()
+    + get_isolation_tests()
 )
 
 # Abgeleitete Lookup-Strukturen
@@ -129,6 +133,45 @@ class AnomalyEngine:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.strip().astype("category")
 
+        # ── AI-Features: Text-Embeddings + Kreditor-Clustering ───────────────
+        self._text_embeddings = None
+        if HAS_EMBEDDINGS:
+            embedder = get_embedder()
+            if embedder is not None:
+                try:
+                    texts = df["buchungstext"].astype(str).tolist()
+                    self._text_embeddings = embedder.embed_texts(texts)
+                    self._log(f"Text-Embeddings berechnet: {self._text_embeddings.shape}")
+                except Exception as e:
+                    logger.warning("Text-Embedding fehlgeschlagen", error=str(e))
+                    self._text_embeddings = None
+
+                # Kreditor-Clustering
+                if self.config.kreditor_clustering_enabled:
+                    try:
+                        kred_col = df["kreditor"].astype(str).str.strip()
+                        unique_kreds = [k for k in kred_col.unique() if k and k.lower() not in ("nan", "null", "none", "")]
+                        if unique_kreds:
+                            mapping = cluster_kreditors(
+                                unique_kreds,
+                                embedder=embedder,
+                                eps=self.config.kreditor_clustering_eps,
+                            )
+                            df["_kreditor_canonical"] = kred_col.map(mapping).fillna(kred_col)
+                            n_merged = sum(1 for k, v in mapping.items() if k != v)
+                            self._log(f"Kreditor-Clustering: {n_merged} Namen zusammengeführt")
+                        else:
+                            df["_kreditor_canonical"] = df["kreditor"].astype(str).str.strip()
+                    except Exception as e:
+                        logger.warning("Kreditor-Clustering fehlgeschlagen", error=str(e))
+                        df["_kreditor_canonical"] = df["kreditor"].astype(str).str.strip()
+                else:
+                    df["_kreditor_canonical"] = df["kreditor"].astype(str).str.strip()
+            else:
+                df["_kreditor_canonical"] = df["kreditor"].astype(str).str.strip()
+        else:
+            df["_kreditor_canonical"] = df["kreditor"].astype(str).str.strip()
+
         # Boolean-Spalten — eine pro Flag (kein Listen-Anti-Pattern)
         for name in _FLAG_NAMES:
             df[f"flag_{name}"] = False
@@ -146,7 +189,7 @@ class AnomalyEngine:
         vals = self.df.loc[(self.df["_abs"] > 0) & (~storno_mask), "_abs"]
         if len(vals) == 0:
             self._log("Beträge: keine Nicht-Null-Werte")
-            return EngineStats()
+            return EngineStats(text_embeddings=self._text_embeddings)
         q1 = float(vals.quantile(0.25))
         q3 = float(vals.quantile(0.75))
         iqr = q3 - q1
@@ -156,6 +199,7 @@ class AnomalyEngine:
             b_iqr   = iqr,
             b_fence = q3 + self.config.iqr_factor * iqr,
             n_vals  = len(vals),
+            text_embeddings = self._text_embeddings,
         )
         self._log(
             f"Beträge: n={stats.n_vals}, μ={stats.b_mean:.0f}, σ={stats.b_std:.0f}, "
@@ -365,6 +409,7 @@ class AnomalyEngine:
     def _t24_buchungstext_periode(self)     -> None: self._run_named_test("BUCHUNGSTEXT_PERIODE")
     def _t25_monats_entwicklung(self)       -> None: self._run_named_test("MONATS_ENTWICKLUNG")
     def _t26_fehlende_monatsbuchung(self)   -> None: self._run_named_test("FEHLENDE_MONATSBUCHUNG")
+    def _t27_isolation_anomalie(self)       -> None: self._run_named_test("ISOLATION_ANOMALIE")
 
 
 # Populate the class-level lookup after _ALL_TESTS is defined

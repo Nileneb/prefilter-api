@@ -1,13 +1,13 @@
 # Prefilter-API — Copilot Instructions
 
-> **Stand: 2026-03-19 · Version 6.2 — OUTPUT-LOGIK-UEBERARBEITUNG**
+> **Stand: 2026-03-19 · Version 6.3 — AI/EMBEDDING-INTEGRATION**
 > Dieses Dokument ist die einzige Wahrheitsquelle für Architektur, Konventionen und Domain-Logik.
 PYTHON ENV VERWENDEN!!!!!!!!!!!!!!!!!!!!!!!!!!!!! AUCH FÜR TESTS!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ---
 
 ## Projektuebersicht
 
-Buchungs-Anomalie Pre-Filter v6.2: Gradio-Web-App die CSV/XLS/XLSX-Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) durch **13 statistische Anomalie-Tests** laufen laesst und verdaechtige Buchungen an einen Langdock Agent weiterleitet. Betrieb ausschliesslich via Docker Compose.
+Buchungs-Anomalie Pre-Filter v6.3: Gradio-Web-App die CSV/XLS/XLSX-Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) durch **14 statistische Anomalie-Tests** laufen laesst und verdaechtige Buchungen an einen Langdock Agent weiterleitet. Betrieb ausschliesslich via Docker Compose.
 
 ### KRITISCH: Diamant-Datenmodell verstehen
 
@@ -53,12 +53,14 @@ User --> Gradio UI |  app.py  |--> Redis --> Celery Worker(s)
 ```
 
 - **app.py**: Gradio UI, dispatcht Celery-Tasks. Lokaler Fallback wenn Redis nicht erreichbar. Integriert file_store fuer Upload-/Ergebnis-Persistenz.
-- **src/engine.py**: Orchestriert 13 Tests aus src/tests/. Kein iterrows(), alles vektorisiert.
+- **src/engine.py**: Orchestriert 14 Tests aus src/tests/. Kein iterrows(), alles vektorisiert.
 - **src/accounting.py**: ZENTRAL — Einzige Stelle fuer Kontoklassen-Grenzen und Vorzeichen-Berechnung.
 - **src/parser.py**: CSV/XLS-Parsing, Spalten-Mapping, Deutsche Zahlen/Datumsformate, NULL-Handling.
 - **src/config.py**: AnalysisConfig (Pydantic) — alle Schwellenwerte konfigurierbar.
 - **src/validator.py**: Spalten-Validierung, Test-Blocking.
 - **src/charts.py**: Plotly-Visualisierungen. Importiert kontoklasse aus src/accounting.
+- **src/embeddings.py**: TextEmbedder Singleton (sentence-transformers, all-MiniLM-L6-v2). Lazy-Load, Graceful Degradation. (NEU v6.3)
+- **src/kreditor_clustering.py**: DBSCAN auf Kreditor-Embeddings fuer kanonische Namen (_kreditor_canonical). (NEU v6.3)
 - **src/file_store.py**: Persistente Speicherung von Uploads + Analyse-Ergebnissen (NEU v6.1).
 - **src/history.py**: Monatsdurchschnitte pro Konto persistent speichern, Trend-Erkennung.
 
@@ -129,7 +131,9 @@ Das System arbeitete auf Zeilen-Ebene. Aber im Diamant-Export:
 7. _beleg_id setzen (aus dvbelegnummer wenn vorhanden, sonst Fallback)
 8. _betrag_signed berechnen (aus _abs + _kontoklasse + soll_haben)
 9. Kategorische Spalten setzen (**mit .str.strip() fuer Diamant fixed-width!**)
-10. Flag-Spalten initialisieren
+10. AI-Features: Text-Embeddings berechnen (wenn sentence-transformers verfuegbar)
+11. AI-Features: Kreditor-Clustering (_kreditor_canonical) (wenn aktiviert)
+12. Flag-Spalten initialisieren
 
 **Erst danach** compute_stats() und Tests ausfuehren.
 
@@ -191,23 +195,24 @@ COLUMN_ALIASES = {
 
 ---
 
-## 13 Tests (src/tests/)
+## 14 Tests (src/tests/)
 
 | # | Modul | Test | Gewicht | Kritisch | Storno-Ausschluss |
 |---|---|---|---|---|---|
 | 01 | betrag.py | BETRAG_ZSCORE | 2.0 | Ja | JA |
 | 02 | betrag.py | BETRAG_IQR | 1.5 | Nein | JA |
 | 03 | betrag.py | KONTO_BETRAG_ANOMALIE | 2.0 | Ja | JA |
-| 04 | duplikate.py | NEAR_DUPLICATE | 2.0 | Ja | JA + Beleg-intern + Same-day-Skip |
+| 04 | duplikate.py | NEAR_DUPLICATE | 2.0 | Ja | JA + Beleg-intern + Same-day-Skip + **Embedding-Similarity (v6.3)** |
 | 05 | duplikate.py | DOPPELTE_BELEGNUMMER | 2.0 | Ja | JA + Beleg-intern |
-| 06 | duplikate.py | BELEG_KREDITOR_DUPLIKAT | 2.5 | Ja | JA + Beleg-intern + same-day-of-month Skip |
+| 06 | duplikate.py | BELEG_KREDITOR_DUPLIKAT | 2.5 | Ja | JA + Beleg-intern + same-day-of-month Skip + **_kreditor_canonical (v6.3)** |
 | 07 | buchungslogik.py | STORNO | 1.5 | **Nein (v6.2)** | Nein (ist der Storno-Test) |
 | 08 | buchungslogik.py | LEERER_BUCHUNGSTEXT | 1.0 | Nein | Nein (**nur PnL-Konten v6.2**) |
 | 09 | buchungslogik.py | RECHNUNGSDATUM_PERIODE | 1.5 | Nein | JA |
 | 10 | buchungslogik.py | BUCHUNGSTEXT_PERIODE | 1.0 | Nein | JA |
-| 11 | kreditor.py | NEUER_KREDITOR_HOCH | 2.5 | Ja | JA |
+| 11 | kreditor.py | NEUER_KREDITOR_HOCH | 2.5 | Ja | JA + **_kreditor_canonical (v6.3)** |
 | 12 | zeitreihe.py | MONATS_ENTWICKLUNG | 1.5 | Nein | JA |
 | 13 | zeitreihe.py | FEHLENDE_MONATSBUCHUNG | 1.0 | Nein | JA |
+| 14 | isolation_anomaly.py | ISOLATION_ANOMALIE | 1.5 | Nein | JA | **NEU v6.3, default deaktiviert** |
 
 ### Storno-Ausschluss-Logik (NEU v6.0)
 
@@ -295,9 +300,11 @@ ABER: Stornos ausschliessen
 | _is_storno | bool | generalumgekehrt nicht-leer ODER Text-Keywords | Storno-Ausschluss |
 | _beleg_id | str | dvbelegnummer oder belegnummer Fallback | Beleg-Gruppierung |
 | _betrag_signed | float64 | compute_signed_betrag(df) | PnL-Charts |
+| _kreditor_canonical | str | cluster_kreditors() oder Fallback auf kreditor | Kreditor-Tests (v6.3) |
 | _score | float64 | Summe Flag-Gewichte | Anomalie-Ranking |
 
 > **WICHTIG float64:** v5.1 nutzte float32 -> Rundungsfehler. v6.0 nutzt float64.
+> **NEU v6.3:** text_embeddings werden auf EngineStats gespeichert (stats.text_embeddings), NICHT in df.attrs (Parquet-Serialisierung!).
 
 ---
 
@@ -346,7 +353,7 @@ ABER: Stornos ausschliessen
 4. **Flag-Spalten**: df[f"flag_{name}"] = True/False, nie Listen in Zellen
 5. **Deutsche Betraege**: parse_german_number_series() aus src/parser.py
 6. **Tests aktualisieren**: Bei jeder Aenderung auch tests/test_engine.py anpassen
-7. **13 Tests**: Nicht "14 Tests" schreiben
+7. **14 Tests**: Nicht "13 Tests" schreiben (ISOLATION_ANOMALIE seit v6.3)
 8. **konto_haben**: Nicht als required behandeln
 9. **Charts**: PnL-Charts nutzen _betrag_signed, nicht _betrag oder _abs
 10. **Storno-Ausschluss**: Tests die _is_storno-Zeilen nicht rausfiltern produzieren Muell
@@ -358,11 +365,16 @@ ABER: Stornos ausschliessen
 16. **LEERER_BUCHUNGSTEXT nur PnL**: Immer _kontoklasse.isin({"Ertrag", "Aufwand"}) pruefen
 17. **Config-Defaults beachten**: beleg_kreditor_days=1, fehlende_buchung_min_quote=0.5, monats_entwicklung_zscore=3.0
 18. **Trailing Whitespace**: Kategorische Spalten werden in _prepare() mit .str.strip() bereinigt. Keine zusaetzlichen .strip()-Aufrufe in Tests noetig.
+19. **required_columns vollstaendig**: Jeder Test muss ALLE Spalten in required_columns listen die er nutzt (inkl. _is_storno, _beleg_id, soll_haben). Der parallele Worker laedt NUR diese Spalten aus dem Parquet.
+20. **Keine iterativen Loops ueber groupby**: Sliding-Window und Paar-Erkennung muessen vektorisiert sein (transform/diff/shift statt for-Loop). Performance-kritisch bei >100k Zeilen.
+21. **Embeddings auf EngineStats**: Text-Embeddings NICHT in df.attrs speichern (bricht Parquet-Serialisierung). Immer stats.text_embeddings verwenden.
+22. **_kreditor_canonical nutzen**: Kreditor-Tests (NeuerKreditorHoch, BelegKreditorDuplikat, NearDuplicate) muessen _kreditor_canonical statt kreditor verwenden (Fallback auf kreditor wenn Clustering deaktiviert).
+23. **Graceful Degradation**: AI-Features (Embeddings, Clustering, Isolation) muessen ohne sentence-transformers/sklearn funktionieren. HAS_EMBEDDINGS/HAS_SKLEARN pruefen.
 - **IMMER README.MD UND copilot-instructions.md AKTUALISIEREN nach Aenderungen, damit Copilot die neuesten Infos hat!**
 
 ---
 
-## Konfigurations-Defaults (src/config.py) — Stand v6.2
+## Konfigurations-Defaults (src/config.py) — Stand v6.3
 
 | Parameter | Default | Beschreibung |
 |---|---|---|
@@ -374,3 +386,8 @@ ABER: Stornos ausschliessen
 | output_threshold | 2.0 | Score-Schwelle fuer Output |
 | doppelte_beleg_min_count | 10 | Min. identische Belegnummern-Gruppen |
 | konto_betrag_sigma | 3.0 | Sigma-Faktor Konto-Betrag-Anomalie |
+| near_duplicate_text_similarity | **0.85** | Embedding-Cosine-Schwelle fuer NEAR_DUPLICATE (0=deaktiviert) **(NEU v6.3)** |
+| kreditor_clustering_enabled | **True** | DBSCAN Kreditor-Clustering aktivieren **(NEU v6.3)** |
+| kreditor_clustering_eps | **0.20** | DBSCAN epsilon (Cosine-Distanz) **(NEU v6.3)** |
+| isolation_enabled | **False** | Isolation-Forest-Test aktivieren **(NEU v6.3)** |
+| isolation_contamination | **0.02** | Erwarteter Anomalie-Anteil **(NEU v6.3)** |

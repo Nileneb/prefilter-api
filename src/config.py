@@ -116,3 +116,25 @@ class AnalysisConfig(BaseModel):
         1000, ge=1,
         description="Maximale Anzahl Ausgabezeilen (Standard: 1000)",
     )
+
+    # ── AI / Embedding-Features ──────────────────────────────
+    near_duplicate_text_similarity: float = Field(
+        0.85, ge=0.0, le=1.0,
+        description="Cosine-Similarity-Schwelle für NEAR_DUPLICATE Buchungstext-Vergleich (Standard: 0.85). 0 = deaktiviert.",
+    )
+    kreditor_clustering_enabled: bool = Field(
+        True,
+        description="Kreditor-Clustering via DBSCAN auf Embeddings aktivieren (Standard: True)",
+    )
+    kreditor_clustering_eps: float = Field(
+        0.20, ge=0.01, le=1.0,
+        description="DBSCAN epsilon für Kreditor-Clustering (1-cosine_similarity, Standard: 0.20)",
+    )
+    isolation_enabled: bool = Field(
+        False,
+        description="Isolation-Forest Catch-All-Test aktivieren (Standard: False, experimentell)",
+    )
+    isolation_contamination: float = Field(
+        0.02, ge=0.001, le=0.5,
+        description="Erwarteter Anomalie-Anteil für Isolation Forest (Standard: 0.02 = 2%)",
+    )

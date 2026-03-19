@@ -1,11 +1,11 @@
 # Buchungs-Anomalie Pre-Filter v6.2
 
-Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) entgegennimmt, 13 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
+Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) entgegennimmt, 14 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
 
 ### v6.0 — Beleg-Aware Refactor
 
 - **Beleg-Ebene**: Buchungszeilen desselben Belegs (DVBelegnummer) werden als zusammengehörig erkannt; Duplikat-Tests ignorieren beleg-interne Zeilen
-- **Storno-Ausschluss**: Storno-Buchungen (Generalumgekehrt ≠ leer) werden aus 9 von 13 Tests automatisch ausgeschlossen, um False-Positives zu eliminieren
+- **Storno-Ausschluss**: Storno-Buchungen (Generalumgekehrt ≠ leer) werden aus 9 von 14 Tests automatisch ausgeschlossen, um False-Positives zu eliminieren
 - **Generalumgekehrt-Fix**: Das Feld enthält DVBelegnummern des Storno-Gegenbelegs (nicht boolean) — jeder nicht-leere Wert = Storno
 - **Kontoklasse Kostenrechnung**: Kontonummern ≥ 80000 werden als "Kostenrechnung" klassifiziert (statt fälschlich "Bestand")
 - **float64-Präzision**: `_betrag`/`_abs` nutzen float64 statt float32 (keine Rundungsartefakte mehr)
@@ -26,6 +26,15 @@ Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Expo
 - **BELEG_KREDITOR_DUPLIKAT days=1**: Level-2-Zeitfenster 3→1 Tag + same-day-of-month Skip (monatliche Regelzahlungen am gleichen Kalendertag werden ignoriert)
 - **LEERER_BUCHUNGSTEXT PnL-only**: Nur Ertrag-/Aufwand-Konten werden geflaggt — Bestand/Kostenrechnung ignoriert
 - **FEHLENDE_MONATSBUCHUNG min_quote=0.5**: Mindestanteil aktiver Monate 30%→50% (strengere Reguläritätsprüfung)
+
+### v6.3 — AI/Embedding-Integration
+
+- **Text-Embeddings** (`src/embeddings.py`): Buchungstexte werden per `all-MiniLM-L6-v2` (sentence-transformers) in 384-dimensionale Vektoren kodiert. Graceful Degradation: ohne `sentence-transformers` laufen alle Tests weiter (Fallback auf exakten String-Match).
+- **NEAR_DUPLICATE mit Cosine-Similarity**: Statt exaktem Buchungstext-Vergleich wird semantische Ähnlichkeit (Cosine ≥ `near_duplicate_text_similarity`) für Duplikat-Erkennung genutzt. Findet auch Duplikate mit leicht abweichendem Text.
+- **Kreditor-Clustering** (`src/kreditor_clustering.py`): DBSCAN auf Kreditor-Embeddings erzeugt `_kreditor_canonical` — verschiedene Schreibweisen desselben Kreditors werden zusammengeführt. Alle Kreditor-Tests nutzen kanonische Namen.
+- **ISOLATION_ANOMALIE** (Test #14): Isolation-Forest Catch-All-Test auf Feature-Vektor (Betrag, Datum-Zyklik, Embeddings). Standardmäßig deaktiviert (`isolation_enabled=False`).
+- **Dockerfile**: Embedding-Modell wird beim Build vorgeladen (Layer-Cache).
+- **Neue Config-Parameter**: `near_duplicate_text_similarity`, `kreditor_clustering_enabled`, `kreditor_clustering_eps`, `isolation_enabled`, `isolation_contamination`
 
 ---
 
@@ -104,7 +113,7 @@ Die Webhook-URL kann auch direkt in der Web-UI überschrieben werden.
 4. Ergebnis in drei Tabs:
    - **Ergebnis** — Zusammenfassung mit Top-3 verdächtigen Buchungen
    - **Verdächtige Buchungen** — Sortierbare Tabelle aller Treffer (Score ≥ 2.0)
-   - **Logs** — Detaillierte Engine-Logs aller 13 Tests
+   - **Logs** — Detaillierte Engine-Logs aller 14 Tests
 
 ---
 
@@ -341,9 +350,11 @@ prefilter-api/
 ├── src/
 │   ├── accounting.py    # Kontoklassen + Vorzeichen-Logik (ZENTRAL)
 │   ├── config.py        # AnalysisConfig (Pydantic-Schwellenwerte)
-│   ├── engine.py        # AnomalyEngine: orchestriert 13 Tests
+│   ├── embeddings.py    # TextEmbedder Singleton (sentence-transformers, NEU v6.3)
+│   ├── engine.py        # AnomalyEngine: orchestriert 14 Tests
 │   ├── file_store.py    # Persistenter Upload+Ergebnis-Store (NEU v8.0)
 │   ├── history.py       # Persistente Lauf-History + Trend-Vergleich (NEU v6.1)
+│   ├── kreditor_clustering.py  # DBSCAN Kreditor-Clustering (NEU v6.3)
 │   ├── main.py          # FastAPI REST API + WebSocket
 │   ├── models.py        # Pydantic-Ergebnis-Modelle
 │   ├── parser.py        # CSV/XLS Einlesen + Spalten-Mapping + Serie-Parsing

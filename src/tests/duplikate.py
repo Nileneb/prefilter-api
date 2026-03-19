@@ -9,6 +9,7 @@ Tests:
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from src.config import AnalysisConfig
@@ -77,15 +78,22 @@ class NearDuplicate(AnomalyTest):
     name = "NEAR_DUPLICATE"
     weight = 2.0
     critical = True
-    required_columns = ["_abs", "_datum", "konto_soll", "kreditor", "buchungstext"]
+    required_columns = ["_abs", "_datum", "konto_soll", "kreditor", "buchungstext",
+                        "_is_storno", "_beleg_id", "_kreditor_canonical"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         flagged: set[int] = set()
         window = config.near_duplicate_days
         max_grp = config.near_duplicate_max_group_size
         reg_months = config.near_duplicate_regular_months
+        text_sim_threshold = getattr(config, "near_duplicate_text_similarity", 0.0)
 
-        self.log("Config", window=window, max_grp=max_grp, reg_months=reg_months)
+        # Text-Embeddings aus EngineStats (von engine._compute_stats() gesetzt)
+        text_embeddings = getattr(stats, "text_embeddings", None)
+        has_embeddings = text_embeddings is not None and text_sim_threshold > 0
+
+        self.log("Config", window=window, max_grp=max_grp, reg_months=reg_months,
+                 text_sim_threshold=text_sim_threshold, has_embeddings=has_embeddings)
 
         # Stornos und Nullbeträge ausschließen
         is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
@@ -96,7 +104,9 @@ class NearDuplicate(AnomalyTest):
         self.metric("n_zero_amounts", n_zero)
         self.metric("n_storno_excluded", n_storno)
 
-        kred = df["kreditor"].astype(str).str.strip()
+        # Kreditor-Spalte: kanonisch wenn vorhanden, sonst Original
+        kred_col = "_kreditor_canonical" if "_kreditor_canonical" in df.columns else "kreditor"
+        kred = df[kred_col].astype(str).str.strip()
         has_kred = (kred != "") & nonzero
         no_kred = (~(kred != "")) & nonzero
 
@@ -105,10 +115,11 @@ class NearDuplicate(AnomalyTest):
             mit_kreditor=int(has_kred.sum()),
             ohne_kreditor=int(no_kred.sum()),
             nullbetrag=n_zero,
+            kreditor_col=kred_col,
         )
 
         # ── MIT Kreditor ──
-        kred_group_cols = ["_abs", "konto_soll", "kreditor"]
+        kred_group_cols = ["_abs", "konto_soll", kred_col]
         regular_kred = _find_regular_keys(
             df[has_kred], kred_group_cols,
             reg_months, logger=self.log, label="kred",
@@ -132,7 +143,8 @@ class NearDuplicate(AnomalyTest):
                     n_skipped_size += 1
                     continue
                 before = len(flagged)
-                self._flag_near_window(grp, window, flagged, max_grp)
+                self._flag_near_window(grp, window, flagged, max_grp,
+                                       text_embeddings, text_sim_threshold)
                 n_flagged_kred += len(flagged) - before
 
         self.log(
@@ -147,7 +159,13 @@ class NearDuplicate(AnomalyTest):
         self.metric("kred_flagged", n_flagged_kred)
 
         # ── OHNE Kreditor ──
-        nokred_group_cols = ["_abs", "konto_soll", "buchungstext"]
+        # Mit Embeddings: nur nach Betrag+Konto gruppieren, Ähnlichkeit per Embedding
+        # Ohne Embeddings: Fallback auf exakten Buchungstext-Match
+        if has_embeddings:
+            nokred_group_cols = ["_abs", "konto_soll"]
+        else:
+            nokred_group_cols = ["_abs", "konto_soll", "buchungstext"]
+
         regular_nokred = _find_regular_keys(
             df[no_kred], nokred_group_cols,
             reg_months, logger=self.log, label="no_kred",
@@ -171,7 +189,8 @@ class NearDuplicate(AnomalyTest):
                     n_skipped_size_nk += 1
                     continue
                 before = len(flagged)
-                self._flag_near_window(grp, window, flagged, max_grp)
+                self._flag_near_window(grp, window, flagged, max_grp,
+                                       text_embeddings, text_sim_threshold)
                 n_flagged_nokred += len(flagged) - before
 
         self.log(
@@ -192,7 +211,12 @@ class NearDuplicate(AnomalyTest):
 
     @staticmethod
     def _flag_near_window(
-        grp: pd.DataFrame, window: int, flagged: set, max_grp: int
+        grp: pd.DataFrame,
+        window: int,
+        flagged: set,
+        max_grp: int,
+        text_embeddings: np.ndarray | None = None,
+        text_sim_threshold: float = 0.0,
     ) -> None:
         # Beleg-interne Zeilen (gleiche _beleg_id) nicht als Duplikat werten
         beleg_ids = grp["_beleg_id"].astype(str) if "_beleg_id" in grp.columns else None
@@ -222,6 +246,35 @@ class NearDuplicate(AnomalyTest):
             same_beleg = dated_beleg == prev_beleg
             close_mask = close_mask & (~same_beleg)
 
+        # Text-Embedding-Similarity: nur flaggen wenn Buchungstexte ähnlich genug
+        if text_embeddings is not None and text_sim_threshold > 0 and close_mask.any():
+            # Die DataFrame-Positionen auf Embedding-Array-Positionen mappen
+            # (Index im DF = Position im Embedding-Array, da Engine sequenziell
+            # nummeriert und Embeddings in gleicher Reihenfolge erstellt)
+            idx_arr = dated.index.to_numpy()
+            curr_pos = np.arange(len(idx_arr))
+            prev_pos = curr_pos - 1
+            # Nur für close_mask == True die Similarity prüfen
+            close_locs = np.where(close_mask.values)[0]
+            if len(close_locs) > 0:
+                curr_df_idx = idx_arr[close_locs]
+                prev_df_idx = idx_arr[close_locs - 1]
+                # Safety: Indices müssen gültig sein
+                max_emb_idx = len(text_embeddings) - 1
+                valid = (curr_df_idx <= max_emb_idx) & (prev_df_idx <= max_emb_idx) & (prev_df_idx >= 0)
+                if valid.all():
+                    sims = np.einsum(
+                        "ij,ij->i",
+                        text_embeddings[curr_df_idx],
+                        text_embeddings[prev_df_idx],
+                    )
+                    # Mask out pairs below similarity threshold
+                    low_sim = sims < text_sim_threshold
+                    if low_sim.any():
+                        close_vals = close_mask.values.copy()
+                        close_vals[close_locs[low_sim]] = False
+                        close_mask = pd.Series(close_vals, index=close_mask.index)
+
         prev_mask = close_mask.shift(-1, fill_value=False)
         flagged.update(dated.index[close_mask | prev_mask])
 
@@ -230,7 +283,8 @@ class DoppelteBelegnummer(AnomalyTest):
     name = "DOPPELTE_BELEGNUMMER"
     weight = 2.0
     critical = True
-    required_columns = ["_betrag", "belegnummer", "konto_soll"]
+    required_columns = ["_betrag", "belegnummer", "konto_soll",
+                        "_is_storno", "_beleg_id", "soll_haben"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         min_count = getattr(config, "doppelte_beleg_min_count", 3)
@@ -275,14 +329,13 @@ class DoppelteBelegnummer(AnomalyTest):
         # Beleg-intern: Nur verschiedene _beleg_id's zählen
         has_beleg_id = "_beleg_id" in sub.columns
         if has_beleg_id:
-            # Zähle distinkte _beleg_id pro Gruppe
-            distinct_belege = (
+            grp_size = (
                 sub.groupby(group_cols, sort=False, observed=True)["_beleg_id"]
                 .transform("nunique")
             )
-            grp_size = distinct_belege
         else:
-            grp_size = sub.groupby(group_cols, sort=False, observed=True).transform("size").iloc[:, 0] if isinstance(sub.groupby(group_cols, sort=False, observed=True).transform("size"), pd.DataFrame) else sub.groupby(group_cols, sort=False, observed=True).transform("size")
+            grp_size = sub.groupby(group_cols, sort=False, observed=True).transform("size")
+            grp_size = grp_size.iloc[:, 0] if isinstance(grp_size, pd.DataFrame) else grp_size
 
         # Reguläre Muster: grp_size auf 0 setzen
         if regular_beleg:
@@ -291,18 +344,17 @@ class DoppelteBelegnummer(AnomalyTest):
                 if k in regular_beleg:
                     grp_size.loc[grp.index] = 0
 
-        # Soll/Haben-Paare ausschließen: S+H mit gleicher Belegnr. = Paar
-        sh = df["soll_haben"].astype(str).str.strip().str.upper()
-        has_sh = sh.isin(["S", "SOLL", "H", "HABEN"])
-        if has_sh.any():
+        # Soll/Haben-Paare vektorisiert ausschließen: S+H mit gleicher Belegnr. = Paar
+        sh = sub.get("soll_haben", pd.Series("", index=sub.index)).astype(str).str.strip().str.upper()
+        has_sh_row = sh.isin(["S", "SOLL", "H", "HABEN"])
+        if has_sh_row.any():
             is_soll = sh.isin(["S", "SOLL"])
-            for beleg_val, grp in sub.groupby("belegnummer", sort=False, observed=True):
-                if len(grp) == 2:
-                    idx = grp.index
-                    if has_sh.loc[idx].all():
-                        soll_count = is_soll.loc[idx].sum()
-                        if soll_count == 1:  # Genau 1 Soll + 1 Haben = Paar
-                            grp_size.loc[idx] = 0  # Nicht als Duplikat zählen
+            beleg_col = sub["belegnummer"]
+            beleg_grp_size = beleg_col.groupby(beleg_col, observed=True).transform("size")
+            sh_count = has_sh_row.astype(int).groupby(beleg_col, observed=True).transform("sum")
+            soll_count = is_soll.astype(int).groupby(beleg_col, observed=True).transform("sum")
+            is_pair = (beleg_grp_size == 2) & (sh_count == 2) & (soll_count == 1)
+            grp_size.loc[is_pair] = 0
 
         # Verteilung loggen
         for threshold in [2, 3, 4, 5, 10]:
@@ -327,12 +379,15 @@ class BelegKreditorDuplikat(AnomalyTest):
     name = "BELEG_KREDITOR_DUPLIKAT"
     weight = 2.5
     critical = True
-    required_columns = ["_abs", "_betrag", "_datum", "belegnummer", "kreditor", "konto_soll"]
+    required_columns = ["_abs", "_betrag", "_datum", "belegnummer", "kreditor",
+                        "konto_soll", "_is_storno", "_beleg_id", "_kreditor_canonical"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         flagged: set[int] = set()
         beleg   = df["belegnummer"].astype(str).str.strip()
-        kred    = df["kreditor"].astype(str).str.strip()
+        # Kanonischer Kreditorname wenn vorhanden
+        kred_col = "_kreditor_canonical" if "_kreditor_canonical" in df.columns else "kreditor"
+        kred    = df[kred_col].astype(str).str.strip()
         window  = config.beleg_kreditor_days
         max_grp = config.beleg_kreditor_max_group_size
 
@@ -357,7 +412,7 @@ class BelegKreditorDuplikat(AnomalyTest):
 
         # ── Reguläre Kreditoren ──
         regular_kb = _find_regular_keys(
-            df[has_all], ["kreditor", "_abs"], reg_months,
+            df[has_all], [kred_col, "_abs"], reg_months,
             logger=self.log, label="beleg_kred_regular",
         )
 
@@ -367,7 +422,7 @@ class BelegKreditorDuplikat(AnomalyTest):
         if has_all.any():
             sub = df.loc[has_all]
             grp_counts = sub.groupby(
-                ["belegnummer", "kreditor", "_abs"], sort=False, observed=True
+                ["belegnummer", kred_col, "_abs"], sort=False, observed=True
             )
             # Beleg-intern: Nur verschiedene _beleg_id's zählen
             has_beleg_id = "_beleg_id" in sub.columns
@@ -380,7 +435,7 @@ class BelegKreditorDuplikat(AnomalyTest):
             level1_raw = len(dup_idx)
 
             for idx in dup_idx:
-                kb = (str(df.at[idx, "kreditor"]).strip(), df.at[idx, "_abs"])
+                kb = (str(df.at[idx, kred_col]).strip(), df.at[idx, "_abs"])
                 if kb in regular_kb:
                     level1_regular += 1
                 else:
@@ -397,65 +452,65 @@ class BelegKreditorDuplikat(AnomalyTest):
         self.metric("level1_regular_excluded", level1_regular)
         self.metric("level1_flagged", level1_count)
 
-        # ── Level 2: gleicher Kreditor + Betrag + Datum ≤ window ──
+        # ── Level 2: gleicher Kreditor + Betrag + Datum ≤ window (vektorisiert) ──
         has_ka = (kred != "") & (df["_abs"] > 0) & (beleg != "") & (~is_storno)
         level2_count = 0
-        level2_groups = 0
-        level2_skipped_size = 0
-        level2_skipped_same_beleg = 0
-        level2_skipped_regular = 0
-        level2_skipped_no_dates = 0
+        grp_cols = [kred_col, "_abs"]
 
-        for key, grp in df.loc[has_ka].groupby(
-            ["kreditor", "_abs"], sort=False, observed=True
-        ):
-            level2_groups += 1
-            if len(grp) < 2 or len(grp) > max_grp:
-                level2_skipped_size += 1
-                continue
-            if key in regular_kb:
-                level2_skipped_regular += 1
-                continue
-            if grp["belegnummer"].astype(str).str.strip().nunique() < 3:
-                level2_skipped_same_beleg += 1
-                continue
+        sub2 = df.loc[has_ka & has_datum].copy()
+        if len(sub2) >= 2:
+            # Vektorisierte Gruppen-Statistiken für Pre-Filter
+            sub2 = sub2.sort_values(grp_cols + ["_datum"])
+            g = sub2.groupby(grp_cols, sort=False, observed=True)
+            sub2["_grp_size"] = g[kred_col].transform("size")
+            sub2["_n_beleg"] = g["belegnummer"].transform("nunique")
+            sub2["_dom"] = sub2["_datum"].dt.day
+            sub2["_n_dom"] = g["_dom"].transform("nunique")
 
-            dated = grp[grp["_datum"].notna()].sort_values("_datum")
-            # Same-day-of-month skip: monatliche Regelzahlungen am gleichen Tag
-            if len(dated) >= 2 and dated["_datum"].dt.day.nunique() == 1:
-                continue
-            if len(dated) < 2:
-                level2_skipped_no_dates += 1
-                continue
+            # Pre-Filter: size ∈ [2, max_grp], ≥ 3 versch. Belegnummern, > 1 Kalendertag
+            keep = (
+                (sub2["_grp_size"] >= 2)
+                & (sub2["_grp_size"] <= max_grp)
+                & (sub2["_n_beleg"] >= 3)
+                & (sub2["_n_dom"] > 1)
+            )
 
-            idxs  = dated.index.tolist()
-            dvals = dated["_datum"].tolist()
-            belege = dated["belegnummer"].astype(str).str.strip().tolist()
-            beleg_ids = dated["_beleg_id"].astype(str).tolist() if "_beleg_id" in dated.columns else None
-            left = 0
-            for right in range(1, len(dvals)):
-                while left < right and (dvals[right] - dvals[left]).days > window:
-                    left += 1
-                for i in range(left, right):
-                    if belege[i] != belege[right]:
-                        # Beleg-intern: gleiche _beleg_id = kein Duplikat
-                        if beleg_ids is not None and beleg_ids[i] == beleg_ids[right]:
-                            continue
-                        before = len(flagged)
-                        flagged.add(idxs[i])
-                        flagged.add(idxs[right])
-                        level2_count += len(flagged) - before
+            # Reguläre Muster ausschließen
+            if regular_kb:
+                key_idx = pd.MultiIndex.from_frame(sub2[grp_cols])
+                reg_idx = pd.MultiIndex.from_tuples(list(regular_kb), names=grp_cols)
+                keep = keep & ~key_idx.isin(reg_idx)
 
-        self.log(
-            "Level 2 fertig",
-            total_groups=level2_groups,
-            skipped_size=level2_skipped_size,
-            skipped_regular=level2_skipped_regular,
-            skipped_same_beleg=level2_skipped_same_beleg,
-            skipped_no_dates=level2_skipped_no_dates,
-            flagged=level2_count,
-        )
-        self.metric("level2_groups", level2_groups)
+            qs = sub2.loc[keep]
+
+            if len(qs) >= 2:
+                # Consecutive-pair-Erkennung innerhalb Gruppen
+                prev_kred = qs[kred_col].shift(1)
+                prev_abs = qs["_abs"].shift(1)
+                same_group = (qs[kred_col] == prev_kred) & (qs["_abs"] == prev_abs)
+
+                date_diff = qs["_datum"].diff().dt.days
+                close = same_group & date_diff.between(0, window)
+
+                # Verschiedene Belegnummer
+                beleg_s = qs["belegnummer"].astype(str).str.strip()
+                diff_beleg = beleg_s != beleg_s.shift(1)
+
+                # Verschiedene _beleg_id
+                if "_beleg_id" in qs.columns:
+                    bid = qs["_beleg_id"].astype(str)
+                    diff_bid = bid != bid.shift(1)
+                else:
+                    diff_bid = pd.Series(True, index=qs.index)
+
+                close_mask = close & diff_beleg & diff_bid
+                # Rückwärts-Propagation: auch den Partner flaggen
+                prev_mask = close_mask.shift(-1, fill_value=False)
+                level2_flagged = set(qs.index[close_mask | prev_mask])
+                flagged.update(level2_flagged)
+                level2_count = len(level2_flagged)
+
+        self.log("Level 2 fertig", flagged=level2_count)
         self.metric("level2_flagged", level2_count)
 
         if flagged:

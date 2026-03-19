@@ -859,7 +859,7 @@ class TestEngineFullRun:
         assert result["statistics"]["total_input"] == 0
 
     def test_all_test_methods_called(self):
-        """Alle 13 Tests liefern einen flag_counts-Eintrag."""
+        """Alle 14 Tests liefern einen flag_counts-Eintrag."""
         df = _make_df(
             datum=["2024-01-15"] * 10,
             betrag=[f"{i * 100}" for i in range(1, 11)],
@@ -878,6 +878,7 @@ class TestEngineFullRun:
             "LEERER_BUCHUNGSTEXT",
             "RECHNUNGSDATUM_PERIODE", "BUCHUNGSTEXT_PERIODE",
             "MONATS_ENTWICKLUNG", "FEHLENDE_MONATSBUCHUNG",
+            "ISOLATION_ANOMALIE",
         }
         assert expected_flags == set(fc.keys()), (
             f"Fehlend: {expected_flags - set(fc.keys())}, "

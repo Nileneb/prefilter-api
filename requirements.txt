@@ -16,3 +16,5 @@ uvicorn[standard]>=0.30.0
 celery[redis]>=5.4.0
 redis>=5.0.0
 python-multipart>=0.0.9
+sentence-transformers>=2.2.0
+scikit-learn>=1.4.0

@@ -13,6 +13,9 @@ RUN if [ -f requirements.lock ]; then \
       pip install --no-cache-dir -r requirements.txt; \
     fi
 
+# Pre-cache embedding model (optional — speeds up first request)
+RUN python -c "try:\n from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2'); print('Model cached successfully')\nexcept Exception as e:\n print(f'Model cache skipped: {e}')" || true
+
 COPY src/ src/
 COPY app.py .
 

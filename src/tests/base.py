@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import pandas as pd
 
@@ -40,6 +41,8 @@ class EngineStats:
     b_iqr:   float = 0.0
     b_fence: float = 0.0
     n_vals:  int   = 0
+    # Optional: Text-Embeddings (numpy ndarray), nicht serialisierbar
+    text_embeddings: Any = field(default=None, repr=False)
 
     def to_dict(self) -> dict:
         return {
@@ -52,7 +55,7 @@ class EngineStats:
 
     @classmethod
     def from_dict(cls, d: dict) -> EngineStats:
-        return cls(**{k: d[k] for k in cls.__dataclass_fields__ if k in d})
+        return cls(**{k: d[k] for k in cls.__dataclass_fields__ if k in d and k != "text_embeddings"})
 
 
 class AnomalyTest:
