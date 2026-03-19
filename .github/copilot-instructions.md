@@ -128,7 +128,7 @@ Das System arbeitete auf Zeilen-Ebene. Aber im Diamant-Export:
 6. _is_storno berechnen (aus generalumgekehrt + Buchungstext)
 7. _beleg_id setzen (aus dvbelegnummer wenn vorhanden, sonst Fallback)
 8. _betrag_signed berechnen (aus _abs + _kontoklasse + soll_haben)
-9. Kategorische Spalten setzen
+9. Kategorische Spalten setzen (**mit .str.strip() fuer Diamant fixed-width!**)
 10. Flag-Spalten initialisieren
 
 **Erst danach** compute_stats() und Tests ausfuehren.
@@ -329,6 +329,7 @@ ABER: Stornos ausschliessen
 - **Storno-Regex synchron halten**: engine._prepare() und Storno.run() MUESSEN dieselbe Regex verwenden! Sonst _is_storno != flag_STORNO.
 - **LEERER_BUCHUNGSTEXT nur PnL**: Bestandskonten/Kostenrechnung haben oft keinen sinnvollen Buchungstext -> nur Ertrag+Aufwand flaggen.
 - **Same-day-of-month Skip**: Monatliche Regelzahlungen am gleichen Kalendertag sind normal -> BELEG_KREDITOR Level 2 ueberspringen.
+- **Trailing Whitespace (Diamant fixed-width)**: Diamant exportiert Textfelder mit trailing Spaces. engine._prepare() stripped diese beim Kategorisieren. NICHT separat strippen — das passiert bereits zentral.
 
 ---
 
@@ -351,6 +352,7 @@ ABER: Stornos ausschliessen
 15. **Storno-Regex synchron**: engine._prepare() und Storno.run() muessen identische Regex verwenden
 16. **LEERER_BUCHUNGSTEXT nur PnL**: Immer _kontoklasse.isin({"Ertrag", "Aufwand"}) pruefen
 17. **Config-Defaults beachten**: beleg_kreditor_days=1, fehlende_buchung_min_quote=0.5, monats_entwicklung_zscore=3.0
+18. **Trailing Whitespace**: Kategorische Spalten werden in _prepare() mit .str.strip() bereinigt. Keine zusaetzlichen .strip()-Aufrufe in Tests noetig.
 - **IMMER README.MD UND copilot-instructions.md AKTUALISIEREN nach Aenderungen, damit Copilot die neuesten Infos hat!**
 
 ---

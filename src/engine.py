@@ -124,9 +124,10 @@ class AnomalyEngine:
         df["_score"]  = 0.0
 
         # Kategorische Spalten — beschleunigt GroupBy und spart RAM
+        # .str.strip() entfernt trailing Spaces aus Diamant fixed-width Export
         for col in ("konto_soll", "konto_haben", "kreditor", "belegnummer", "buchungstext"):
             if col in df.columns:
-                df[col] = df[col].astype("category")
+                df[col] = df[col].astype(str).str.strip().astype("category")
 
         # Boolean-Spalten — eine pro Flag (kein Listen-Anti-Pattern)
         for name in _FLAG_NAMES:
