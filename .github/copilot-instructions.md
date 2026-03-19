@@ -1,13 +1,13 @@
 # Prefilter-API — Copilot Instructions
 
-> **Stand: 2026-03-19 · Version 6.0 — BELEG-AWARE REFACTOR**
+> **Stand: 2026-03-19 · Version 6.2 — OUTPUT-LOGIK-UEBERARBEITUNG**
 > Dieses Dokument ist die einzige Wahrheitsquelle für Architektur, Konventionen und Domain-Logik.
 PYTHON ENV VERWENDEN!!!!!!!!!!!!!!!!!!!!!!!!!!!!! AUCH FÜR TESTS!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ---
 
 ## Projektuebersicht
 
-Buchungs-Anomalie Pre-Filter v6.0: Gradio-Web-App die CSV/XLS/XLSX-Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) durch **13 statistische Anomalie-Tests** laufen laesst und verdaechtige Buchungen an einen Langdock Agent weiterleitet. Betrieb ausschliesslich via Docker Compose.
+Buchungs-Anomalie Pre-Filter v6.2: Gradio-Web-App die CSV/XLS/XLSX-Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) durch **13 statistische Anomalie-Tests** laufen laesst und verdaechtige Buchungen an einen Langdock Agent weiterleitet. Betrieb ausschliesslich via Docker Compose.
 
 ### KRITISCH: Diamant-Datenmodell verstehen
 
@@ -52,13 +52,15 @@ User --> Gradio UI |  app.py  |--> Redis --> Celery Worker(s)
                    +--------------+
 ```
 
-- **app.py**: Gradio UI, dispatcht Celery-Tasks. Lokaler Fallback wenn Redis nicht erreichbar.
+- **app.py**: Gradio UI, dispatcht Celery-Tasks. Lokaler Fallback wenn Redis nicht erreichbar. Integriert file_store fuer Upload-/Ergebnis-Persistenz.
 - **src/engine.py**: Orchestriert 13 Tests aus src/tests/. Kein iterrows(), alles vektorisiert.
 - **src/accounting.py**: ZENTRAL — Einzige Stelle fuer Kontoklassen-Grenzen und Vorzeichen-Berechnung.
 - **src/parser.py**: CSV/XLS-Parsing, Spalten-Mapping, Deutsche Zahlen/Datumsformate, NULL-Handling.
 - **src/config.py**: AnalysisConfig (Pydantic) — alle Schwellenwerte konfigurierbar.
 - **src/validator.py**: Spalten-Validierung, Test-Blocking.
 - **src/charts.py**: Plotly-Visualisierungen. Importiert kontoklasse aus src/accounting.
+- **src/file_store.py**: Persistente Speicherung von Uploads + Analyse-Ergebnissen (NEU v6.1).
+- **src/history.py**: Monatsdurchschnitte pro Konto persistent speichern, Trend-Erkennung.
 
 ---
 
@@ -198,9 +200,9 @@ COLUMN_ALIASES = {
 | 03 | betrag.py | KONTO_BETRAG_ANOMALIE | 2.0 | Ja | JA |
 | 04 | duplikate.py | NEAR_DUPLICATE | 2.0 | Ja | JA + Beleg-intern |
 | 05 | duplikate.py | DOPPELTE_BELEGNUMMER | 2.0 | Ja | JA + Beleg-intern |
-| 06 | duplikate.py | BELEG_KREDITOR_DUPLIKAT | 2.5 | Ja | JA + Beleg-intern |
-| 07 | buchungslogik.py | STORNO | 1.5 | Ja | Nein (ist der Storno-Test) |
-| 08 | buchungslogik.py | LEERER_BUCHUNGSTEXT | 1.0 | Nein | Nein |
+| 06 | duplikate.py | BELEG_KREDITOR_DUPLIKAT | 2.5 | Ja | JA + Beleg-intern + same-day-of-month Skip |
+| 07 | buchungslogik.py | STORNO | 1.5 | **Nein (v6.2)** | Nein (ist der Storno-Test) |
+| 08 | buchungslogik.py | LEERER_BUCHUNGSTEXT | 1.0 | Nein | Nein (**nur PnL-Konten v6.2**) |
 | 09 | buchungslogik.py | RECHNUNGSDATUM_PERIODE | 1.5 | Nein | Nein |
 | 10 | buchungslogik.py | BUCHUNGSTEXT_PERIODE | 1.0 | Nein | Nein |
 | 11 | kreditor.py | NEUER_KREDITOR_HOCH | 2.5 | Ja | JA |
@@ -225,12 +227,44 @@ Tests mit Storno-Ausschluss muessen:
 
 ## Berechnungslogik (Kurzreferenz)
 
-### 7. Storno-Erkennung (KORRIGIERT v6.0)
+### 7. Storno-Erkennung (KORRIGIERT v6.0, AKTUALISIERT v6.2)
 ```
-Buchungstext enthaelt "Storno"/"Korrektur"/"Rueckbuchung" (case-insensitive)
-ODER generalumgekehrt ist NICHT leer/NULL/nan/0 (Gewicht 1.5, kritisch)
+# engine._prepare() UND Storno.run() verwenden DIESELBE Logik:
+Buchungstext enthaelt "storno|stornierung|rueckbuchung|gutschrift.*storn" (case-insensitive)
+ODER "korrektur" (word-boundary) NUR bei negativem Betrag (_betrag < 0)
+ODER generalumgekehrt ist NICHT leer/NULL/nan/0
+
+Gewicht 1.5, critical=FALSE (v6.2 — erzwingt NICHT mehr Output!)
 ```
 **NICHT:** Generalumgekehrt = "1"/"true"/"J" (DAS WAR DER BUG!)
+**NICHT:** "korrektur" pauschal als Storno (v6.1 war uneinheitlich zwischen _prepare() und Storno.run())
+
+> **KRITISCH v6.2:** STORNO hat `critical = False`. Das bedeutet: Storno allein (Score 1.5)
+> reicht NICHT fuer Output (threshold=2.0). Nur Buchungen mit mehreren Flags oder
+> Score >= threshold erscheinen im Output. Das war das Kernproblem der False-Positives!
+
+### 6. BELEG_KREDITOR_DUPLIKAT (AKTUALISIERT v6.2)
+```
+Level 1: gleiche Belegnr + Kreditor + Betrag(_abs), >= 4 verschiedene _beleg_ids -> verdaechtig
+Level 2: gleicher Kreditor + Betrag + Datum <= 1 Tag (v6.2, vorher 3) -> verdaechtig
+         PLUS: same-day-of-month Skip (v6.2) — wenn alle Buchungen am gleichen Kalendertag
+               fallen = monatliche Regelzahlung -> KEIN Duplikat
+ABER: Beleg-interne Zeilen (gleiche _beleg_id) IGNORIEREN
+ABER: Stornos ausschliessen
+ABER: Regulaere Kreditoren-Muster ausschliessen
+```
+
+### 8. LEERER_BUCHUNGSTEXT (AKTUALISIERT v6.2)
+```
+Buchungstext leer, generisch (diverse, sonstiges, ...) oder <= 2 Zeichen
+NUR fuer PnL-Konten (Ertrag + Aufwand) — Bestand/Kostenrechnung werden IGNORIERT
+```
+
+### 13. FEHLENDE_MONATSBUCHUNG (AKTUALISIERT v6.2)
+```
+Konto fehlt in Monat, wo sonst regelmaessig gebucht
+min_quote = 0.5 (v6.2, vorher 0.3) — Konto muss in 50% der Monate aktiv sein
+```
 
 ### 5. Doppelte Belegnummer (KORRIGIERT v6.0)
 ```
@@ -265,14 +299,19 @@ ABER: Stornos ausschliessen
 
 ---
 
-## Entfernte Features
+## Entfernte/Geaenderte Features
 
-| Feature | Warum entfernt | Version |
+| Feature | Warum entfernt/geaendert | Version |
 |---|---|---|
 | VELOCITY_ANOMALIE | Diamant hat keinen erfasser | v5.1 |
 | float32 fuer _betrag/_abs | Rundungsfehler | v6.0 |
 | _kontoklasse() inline in charts.py | Muss aus src/accounting importiert werden | v6.0 |
 | gu.isin({"1","true","j"}) | Generalumgekehrt enthaelt DVBelegnummern! | v6.0 |
+| STORNO critical=True | Erzwang Output fuer JEDE Storno-Buchung → 34.7% FP | v6.2 |
+| Storno.run() eigene Regex | Nicht synchron mit engine._prepare() | v6.2 |
+| LEERER_BUCHUNGSTEXT alle Konten | Bestand/Kostenrechnung braucht keinen Buchungstext | v6.2 |
+| beleg_kreditor_days=3 | Zu grosses Zeitfenster fuer Level 2 | v6.2 |
+| fehlende_buchung_min_quote=0.3 | Zu niedrig, flaggt sporadische Konten | v6.2 |
 
 ---
 
@@ -286,6 +325,10 @@ ABER: Stornos ausschliessen
 - **soll_haben fehlt**: Normal bei Diamant -> Fallback auf Originalvorzeichen.
 - **13 nicht 14 Tests**: VELOCITY_ANOMALIE ist entfernt.
 - **_kontoklasse() inline**: NICHT in charts.py definieren -> aus accounting.py importieren.
+- **critical=True Output-Logik**: Flags mit critical=True erzwingen Output UNABHAENGIG vom Score! Nur setzen wenn wirklich JEDE Buchung mit diesem Flag im Output sein soll. (v6.2: STORNO auf False gesetzt weil Storno allein kein Anomalie-Signal ist.)
+- **Storno-Regex synchron halten**: engine._prepare() und Storno.run() MUESSEN dieselbe Regex verwenden! Sonst _is_storno != flag_STORNO.
+- **LEERER_BUCHUNGSTEXT nur PnL**: Bestandskonten/Kostenrechnung haben oft keinen sinnvollen Buchungstext -> nur Ertrag+Aufwand flaggen.
+- **Same-day-of-month Skip**: Monatliche Regelzahlungen am gleichen Kalendertag sind normal -> BELEG_KREDITOR Level 2 ueberspringen.
 
 ---
 
@@ -304,4 +347,23 @@ ABER: Stornos ausschliessen
 11. **Beleg-Ebene**: Duplikat-Tests muessen Beleg-interne Zeilen ignorieren
 12. **float64**: Immer float64 fuer _betrag/_abs, nie float32
 13. **Generalumgekehrt**: Pruefen auf nicht-leer, NICHT auf bestimmte Werte
-- **IMMER README.MD aKTUALISIEREN nach Änderungen, damit Copilot die neuesten Infos hat!** 
+14. **critical sparsam setzen**: Nur wenn Flag ALLEIN den Output erzwingen soll (unabhaengig Score). STORNO ist NICHT critical (v6.2).
+15. **Storno-Regex synchron**: engine._prepare() und Storno.run() muessen identische Regex verwenden
+16. **LEERER_BUCHUNGSTEXT nur PnL**: Immer _kontoklasse.isin({"Ertrag", "Aufwand"}) pruefen
+17. **Config-Defaults beachten**: beleg_kreditor_days=1, fehlende_buchung_min_quote=0.5, monats_entwicklung_zscore=3.0
+- **IMMER README.MD UND copilot-instructions.md AKTUALISIEREN nach Aenderungen, damit Copilot die neuesten Infos hat!**
+
+---
+
+## Konfigurations-Defaults (src/config.py) — Stand v6.2
+
+| Parameter | Default | Beschreibung |
+|---|---|---|
+| beleg_kreditor_days | **1** | Level-2-Zeitfenster in Tagen |
+| beleg_kreditor_max_group_size | 20 | Max. Gruppengroesse Level 2 |
+| beleg_kreditor_regular_pct | 0.15 | Anteil Datenmonate fuer regulaere Muster |
+| fehlende_buchung_min_quote | **0.5** | Mindestanteil aktiver Monate |
+| monats_entwicklung_zscore | **3.0** | Z-Score-Grenze fuer Monatsausreisser |
+| output_threshold | 2.0 | Score-Schwelle fuer Output |
+| doppelte_beleg_min_count | 10 | Min. identische Belegnummern-Gruppen |
+| konto_betrag_sigma | 3.0 | Sigma-Faktor Konto-Betrag-Anomalie |
