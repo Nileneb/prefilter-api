@@ -5,7 +5,10 @@ import numpy as np
 import plotly.graph_objects as go
 import pytest
 
-from src.charts import ChartBuilder, _empty_figure
+from src.charts import (
+    ChartBuilder, DynamicChartBuilder, DYNAMIC_CHART_TYPES,
+    classify_columns, check_column_quality, _empty_figure, _enrich_for_dynamic,
+)
 from src.accounting import kontoklasse, compute_signed_betrag
 
 
@@ -167,3 +170,150 @@ class TestEmptyData:
         fig = _empty_figure("Test-Nachricht")
         assert isinstance(fig, go.Figure)
         assert fig.layout.annotations[0].text == "Test-Nachricht"
+
+
+class TestClassifyColumns:
+    def test_basic_classification(self, sample_df):
+        cols = classify_columns(sample_df)
+        assert "_abs" in cols["numeric"]
+        assert "_score" in cols["numeric"]
+        assert "_datum" in cols["datetime"]
+        assert "konto_soll" in cols["categorical"]
+        # Internal columns without whitelist should be filtered
+        assert "_beleg_id" not in cols["all"]
+        assert "_betrag_signed" in cols["numeric"]  # Whitelist
+
+    def test_all_contains_all_types(self, sample_df):
+        cols = classify_columns(sample_df)
+        for c in cols["numeric"]:
+            assert c in cols["all"]
+        for c in cols["categorical"]:
+            assert c in cols["all"]
+        for c in cols["datetime"]:
+            assert c in cols["all"]
+
+
+class TestCheckColumnQuality:
+    def test_missing_column(self, sample_df):
+        result = check_column_quality(sample_df, "nonexistent")
+        assert "nicht vorhanden" in result
+
+    def test_good_column(self, sample_df):
+        result = check_column_quality(sample_df, "_abs")
+        assert result == ""
+
+    def test_mostly_null_column(self):
+        df = pd.DataFrame({"col": [None, None, None, 1.0]})
+        result = check_column_quality(df, "col")
+        assert "fehlende Werte" in result
+
+
+class TestEnrichForDynamic:
+    def test_adds_derived_columns(self, sample_df):
+        enriched = _enrich_for_dynamic(sample_df)
+        assert "Wochentag" in enriched.columns
+        assert "Monat" in enriched.columns
+        assert "Quartal" in enriched.columns
+        assert "Kalenderwoche" in enriched.columns
+        assert "Risiko-Kategorie" in enriched.columns
+        assert "Betrags-Klasse" in enriched.columns
+        assert "Anzahl_Flags" in enriched.columns
+
+    def test_does_not_modify_original(self, sample_df):
+        original_cols = set(sample_df.columns)
+        _enrich_for_dynamic(sample_df)
+        assert set(sample_df.columns) == original_cols
+
+
+class TestDynamicChartBuilder:
+    def test_scatter_2d(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("Scatter", x="_abs", y="_score")
+        assert isinstance(fig, go.Figure)
+        assert len(fig.data) >= 1
+
+    def test_scatter_3d(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("Scatter 3D", x="_abs", y="_score", z="_betrag")
+        assert isinstance(fig, go.Figure)
+        assert len(fig.data) >= 1
+
+    def test_histogram(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("Histogram", x="_abs")
+        assert isinstance(fig, go.Figure)
+
+    def test_bar(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("Bar", x="konto_soll", y="_abs")
+        assert isinstance(fig, go.Figure)
+
+    def test_box(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("Box", x="_kontoklasse", y="_abs")
+        assert isinstance(fig, go.Figure)
+
+    def test_violin(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("Violin", x="_kontoklasse", y="_abs")
+        assert isinstance(fig, go.Figure)
+
+    def test_line(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("Linie / Zeitreihe", x="_datum", y="_abs")
+        assert isinstance(fig, go.Figure)
+
+    def test_invalid_chart_type(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("NONEXISTENT", x="_abs")
+        assert isinstance(fig, go.Figure)
+        # Should be empty figure with error message
+        assert len(fig.layout.annotations) > 0
+
+    def test_invalid_column(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("Scatter", x="nonexistent", y="_score")
+        assert isinstance(fig, go.Figure)
+        assert len(fig.layout.annotations) > 0
+
+    def test_color_and_size(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("Scatter", x="_abs", y="_score",
+                            color="_kontoklasse", size="_abs")
+        assert isinstance(fig, go.Figure)
+
+    def test_no_color(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        fig = builder.build("Bar", x="konto_soll", y="_abs", color="(keine)")
+        assert isinstance(fig, go.Figure)
+
+    def test_all_chart_types_no_crash(self, sample_df):
+        builder = DynamicChartBuilder(sample_df)
+        for chart_type in DYNAMIC_CHART_TYPES:
+            fig = builder.build(chart_type, x="_abs", y="_score")
+            assert isinstance(fig, go.Figure), f"{chart_type} did not return a Figure"
+
+
+class TestAnomalyLandscape3D:
+    def test_basic(self, builder):
+        fig = builder.anomaly_landscape_3d()
+        assert isinstance(fig, go.Figure)
+        layout_json = fig.layout.to_plotly_json()
+        assert "scene" in layout_json
+
+    def test_empty_data(self, sample_result):
+        empty_df = pd.DataFrame({
+            "konto_soll": pd.Series(dtype="category"),
+            "_datum": pd.Series(dtype="datetime64[ns]"),
+            "_betrag": pd.Series(dtype="float64"),
+            "_abs": pd.Series(dtype="float64"),
+            "_score": pd.Series(dtype="float64"),
+            "kreditor": pd.Series(dtype="category"),
+            "soll_haben": pd.Series(dtype="str"),
+            "buchungstext": pd.Series(dtype="category"),
+            "belegnummer": pd.Series(dtype="category"),
+        })
+        sample_result["statistics"]["flag_counts"] = {}
+        b = ChartBuilder(empty_df, sample_result)
+        fig = b.anomaly_landscape_3d()
+        assert isinstance(fig, go.Figure)

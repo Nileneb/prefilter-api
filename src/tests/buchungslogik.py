@@ -16,48 +16,44 @@ from src.config import AnalysisConfig
 from src.parser import parse_date_series
 from src.tests.base import AnomalyTest, EngineStats
 
+# Alle Werte die in generalumgekehrt als "kein Storno" gelten.
+# Verwendet in engine._prepare() (Codier-Regel #15).
+_GU_FALSY = frozenset({"", "0", "0.0", "0.00", "nan", "null", "none", "na", "n/a", "false", "nein", "no"})
+
 
 class Storno(AnomalyTest):
     name = "STORNO"
     weight = 1.5
     critical = False
-    required_columns = ["_abs", "_betrag", "buchungstext", "generalumgekehrt"]
+    required_columns = ["_abs", "_betrag", "_is_storno", "buchungstext", "generalumgekehrt"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        txt = df["buchungstext"].astype(str).str.lower()
+        # System-Stornos (mit Generalumgekehrt-Referenz) sind NORMAL und
+        # werden NICHT geflaggt. _is_storno identifiziert sie weiterhin
+        # fuer den Ausschluss aus anderen Tests.
+        # Nur VERDAECHTIGE Storno-Muster werden hier geflaggt:
+        #   1. Text-basierte Stornos OHNE GU-Referenz (manuell/verdaechtig)
+        #   2. Gutschrift mit hohem Betrag (ohne Storno-Text)
+
+        gu = df.get("generalumgekehrt", pd.Series("", index=df.index))
+        gu_str = gu.astype(str).str.strip().str.rstrip(";")
+        has_gu = ~gu_str.str.lower().isin(_GU_FALSY)
+
+        is_storno = df["_is_storno"].fillna(False)
+        text_only_storno = is_storno & ~has_gu
+
+        # Gutschrift mit hohem Betrag (nicht-Storno-Gutschrift)
         gutschrift_schwelle = (
             stats.b_mean + stats.b_std if stats.b_std > 0 else float("inf")
         )
-
-        # Textbasierte Erkennung — synchron mit engine._prepare() _is_storno
-        hard_mask = txt.str.contains(
-            r"storno|stornierung|r[uü]ckbuchung|gutschrift.*storn", regex=True, na=False
-        )
-        # "korrektur" nur bei negativem Betrag als Storno werten
-        korrektur_mask = txt.str.contains(r"\bkorrektur\b", regex=True, na=False) & (df["_betrag"] < 0)
-
-        # ENTFERNT: neg_mask = df["_betrag"] < 0
-        # Negative Beträge sind in Soll/Haben-Logik NORMAL!
-        # Storno erkennt man am Text oder am Generalumgekehrt-Flag.
-
+        txt = df["buchungstext"].astype(str).str.lower()
         gutschrift_mask = (
             txt.str.contains("gutschrift", na=False)
-            & ~txt.str.contains("storn", na=False)  # gutschrift.*storn already in hard_mask
+            & ~txt.str.contains("storn", na=False)
             & (df["_abs"] > gutschrift_schwelle)
         )
 
-        # Generalumgekehrt-Kennzeichen aus Diamant-Export
-        # Enthält DVBelegnummer des Storno-Gegenbelegs, NICHT boolean!
-        # Jeder nicht-leere/nicht-NULL Wert = STORNO
-        gu = df.get("generalumgekehrt", pd.Series("", index=df.index))
-        gu_str = gu.astype(str).str.strip()
-        gu_mask = (
-            (gu_str != "")
-            & (~gu_str.str.lower().isin({"nan", "null", "none"}))
-            & (gu_str != "0")
-        )
-
-        mask = hard_mask | korrektur_mask | gutschrift_mask | gu_mask
+        mask = text_only_storno | gutschrift_mask
         return self._flag(df, mask)
 
 

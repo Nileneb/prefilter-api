@@ -9,6 +9,8 @@ Public API:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -338,7 +340,7 @@ class ChartBuilder:
     # ── Aggregator ────────────────────────────────────────────
 
     def all_charts(self) -> dict[str, go.Figure]:
-        """Gibt alle Charts als Dict zurück."""
+        """Gibt alle Charts als Dict zurück. 3D-Charts NICHT enthalten (Performance)."""
         charts = {}
         methods = [
             ("score_distribution", self.score_distribution),
@@ -359,6 +361,52 @@ class ChartBuilder:
                 charts[name] = _empty_figure(f"Fehler bei {name}")
         return charts
 
+    # ── 3D-Preset-Charts (on-demand, NICHT in all_charts) ────
+
+    def anomaly_landscape_3d(self) -> go.Figure:
+        """3D-Scatter: Anomalie-Landschaft (Betrag × Konto × Zeit)."""
+        df = self.df.copy()
+        if "_datum" not in df.columns or "_abs" not in df.columns:
+            return _empty_figure("Keine Betrags-/Datumsdaten")
+
+        df = df[df["_datum"].notna() & df["_abs"].notna()].copy()
+        if df.empty:
+            return _empty_figure("Keine gültigen Daten")
+
+        df["_datum_num"] = (df["_datum"] - df["_datum"].min()).dt.days
+        df["_konto_num"] = pd.to_numeric(df["konto_soll"].astype(str), errors="coerce")
+        df = df[df["_konto_num"].notna()]
+        if df.empty:
+            return _empty_figure("Keine numerischen Kontonummern")
+
+        fig = px.scatter_3d(
+            df,
+            x="_abs",
+            y="_konto_num",
+            z="_datum_num",
+            color="_score",
+            color_continuous_scale="RdYlGn_r",
+            size="_abs",
+            size_max=15,
+            hover_data=["buchungstext", "belegnummer", "kreditor", "_score"],
+            opacity=0.6,
+            title="Anomalie-Landschaft 3D (Betrag × Konto × Zeit)",
+            labels={
+                "_abs": "Betrag (€)",
+                "_konto_num": "Kontonummer",
+                "_datum_num": "Tage seit Beginn",
+                "_score": "Anomaly Score",
+            },
+        )
+        fig.update_layout(
+            scene=dict(
+                xaxis_title="Betrag (€)",
+                yaxis_title="Kontonummer",
+                zaxis_title="Zeit (Tage)",
+            ),
+        )
+        return fig
+
 
 def _empty_figure(message: str) -> go.Figure:
     """Erzeugt eine leere Plotly-Figure mit Hinweistext."""
@@ -372,3 +420,143 @@ def _empty_figure(message: str) -> go.Figure:
         plot_bgcolor="white",
     )
     return fig
+
+
+# ══════════════════════════════════════════════════════════════
+# DYNAMISCHER CHART-BUILDER (Phase 1–3)
+# ══════════════════════════════════════════════════════════════
+
+# Interne Spalten die im Dynamic Builder sichtbar sein sollen
+_SHOW_INTERNAL = {"_abs", "_betrag", "_betrag_signed", "_score", "_datum", "_kontoklasse"}
+
+DYNAMIC_CHART_TYPES: dict[str, Any] = {
+    "Scatter": px.scatter,
+    "Bar": px.bar,
+    "Histogram": px.histogram,
+    "Box": px.box,
+    "Violin": px.violin,
+    "Heatmap (Dichte)": px.density_heatmap,
+    "Linie / Zeitreihe": px.line,
+    "Scatter 3D": px.scatter_3d,
+}
+
+
+def classify_columns(df: pd.DataFrame) -> dict[str, list[str]]:
+    """Kategorisiert DataFrame-Spalten für den dynamischen Chart-Builder."""
+    numeric = df.select_dtypes("number").columns.tolist()
+    categorical = df.select_dtypes(["object", "category"]).columns.tolist()
+    datetime_cols = df.select_dtypes("datetime").columns.tolist()
+    boolean = df.select_dtypes("bool").columns.tolist()
+
+    def _filter(cols: list[str]) -> list[str]:
+        return [c for c in cols if not c.startswith("_") or c in _SHOW_INTERNAL]
+
+    return {
+        "numeric": _filter(numeric),
+        "categorical": _filter(categorical) + _filter(boolean),
+        "datetime": _filter(datetime_cols),
+        "all": _filter(numeric + categorical + datetime_cols + boolean),
+    }
+
+
+def check_column_quality(df: pd.DataFrame, col: str) -> str:
+    """Gibt eine Warnung zurück wenn die Spalte >50% NaN hat."""
+    if col not in df.columns:
+        return f"⚠️ Spalte '{col}' nicht vorhanden"
+    pct_null = df[col].isna().mean() * 100
+    if pct_null > 50:
+        return f"⚠️ {col}: {pct_null:.0f}% fehlende Werte — Chart möglicherweise nicht aussagekräftig"
+    return ""
+
+
+def _enrich_for_dynamic(df: pd.DataFrame) -> pd.DataFrame:
+    """Fügt abgeleitete Spalten hinzu die für dynamische Charts nützlich sind."""
+    df = df.copy()
+    if "_datum" in df.columns and df["_datum"].notna().any():
+        df["Wochentag"] = df["_datum"].dt.day_name()
+        df["Monat"] = df["_datum"].dt.to_period("M").astype(str)
+        df["Quartal"] = df["_datum"].dt.to_period("Q").astype(str)
+        df["Kalenderwoche"] = df["_datum"].dt.isocalendar().week.astype(int)
+
+    if "_score" in df.columns:
+        df["Risiko-Kategorie"] = pd.cut(
+            df["_score"],
+            bins=[-0.01, 0, 2, 4, float("inf")],
+            labels=["Unauffällig", "Niedrig", "Mittel", "Hoch"],
+        )
+
+    if "_abs" in df.columns:
+        df["Betrags-Klasse"] = pd.cut(
+            df["_abs"],
+            bins=[0, 100, 1000, 10000, 100000, float("inf")],
+            labels=["<100€", "100-1k€", "1k-10k€", "10k-100k€", ">100k€"],
+        )
+
+    flag_cols = [c for c in df.columns if c.startswith("flag_")]
+    if flag_cols:
+        df["Anzahl_Flags"] = df[flag_cols].sum(axis=1)
+
+    return df
+
+
+class DynamicChartBuilder:
+    """Erstellt Charts dynamisch basierend auf User-Auswahl."""
+
+    def __init__(self, df: pd.DataFrame):
+        self.df = _enrich_for_dynamic(_downsample_for_charts(df))
+        self.cols = classify_columns(self.df)
+
+    def build(
+        self,
+        chart_type: str,
+        x: str,
+        y: str | None = None,
+        z: str | None = None,
+        color: str | None = None,
+        size: str | None = None,
+    ) -> go.Figure:
+        if chart_type not in DYNAMIC_CHART_TYPES:
+            return _empty_figure(f"Unbekannter Diagrammtyp: {chart_type}")
+
+        if not x or x not in self.df.columns:
+            return _empty_figure(f"X-Achse '{x}' nicht verfügbar")
+
+        chart_fn = DYNAMIC_CHART_TYPES[chart_type]
+        kwargs: dict[str, Any] = {"data_frame": self.df, "x": x}
+
+        if y and chart_type != "Histogram":
+            if y not in self.df.columns:
+                return _empty_figure(f"Y-Achse '{y}' nicht verfügbar")
+            kwargs["y"] = y
+
+        if z and "3D" in chart_type:
+            if z not in self.df.columns:
+                return _empty_figure(f"Z-Achse '{z}' nicht verfügbar")
+            kwargs["z"] = z
+
+        if color and color != "(keine)" and color in self.df.columns:
+            kwargs["color"] = color
+
+        if size and size != "(keine)" and "Scatter" in chart_type and size in self.df.columns:
+            kwargs["size"] = size
+            kwargs["size_max"] = 20
+
+        hover_cols = [c for c in ["buchungstext", "belegnummer", "kreditor", "_score"]
+                      if c in self.df.columns and c not in (x, y, z, color, size)]
+        if hover_cols:
+            kwargs["hover_data"] = hover_cols[:4]
+
+        if "Scatter" in chart_type:
+            kwargs["opacity"] = 0.7
+
+        try:
+            fig = chart_fn(**kwargs)
+            title = f"{chart_type}: {x}"
+            if y and chart_type != "Histogram":
+                title += f" × {y}"
+            if z and "3D" in chart_type:
+                title += f" × {z}"
+            fig.update_layout(title=title, template="plotly_white")
+            return fig
+        except Exception as e:
+            return _empty_figure(f"Fehler: {e}")

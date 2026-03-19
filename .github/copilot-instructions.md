@@ -58,7 +58,7 @@ User --> Gradio UI |  app.py  |--> Redis --> Celery Worker(s)
 - **src/parser.py**: CSV/XLS-Parsing, Spalten-Mapping, Deutsche Zahlen/Datumsformate, NULL-Handling.
 - **src/config.py**: AnalysisConfig (Pydantic) — alle Schwellenwerte konfigurierbar.
 - **src/validator.py**: Spalten-Validierung, Test-Blocking.
-- **src/charts.py**: Plotly-Visualisierungen. Importiert kontoklasse aus src/accounting.
+- **src/charts.py**: Plotly-Visualisierungen. ChartBuilder (10 vordefinierte Charts + anomaly_landscape_3d), DynamicChartBuilder (nutzerdefinierte Charts mit 3D), classify_columns(). Importiert kontoklasse aus src/accounting.
 - **src/embeddings.py**: TextEmbedder Singleton (sentence-transformers, all-MiniLM-L6-v2). Lazy-Load, Graceful Degradation. (NEU v6.3)
 - **src/kreditor_clustering.py**: DBSCAN auf Kreditor-Embeddings fuer kanonische Namen (_kreditor_canonical). (NEU v6.3)
 - **src/file_store.py**: Persistente Speicherung von Uploads + Analyse-Ergebnissen (NEU v6.1).
@@ -93,12 +93,15 @@ gu_mask = gu.isin({"1", "true", "j", "ja", "yes", "x"})  # -> 0 Treffer!
 
 ### Neues (KORREKTES) Verhalten:
 ```python
-# RICHTIG! Jeder nicht-leere/nicht-NULL Wert = STORNO
+# RICHTIG! Alle Null-Varianten ausschliessen via frozenset
+from src.tests.buchungslogik import _GU_FALSY  # frozenset({"" , "0", "0.0", "0.00", "nan", "null", "none", "na", "n/a", "false"})
 gu_str = gu.astype(str).str.strip()
-gu_mask = (gu_str != "") & (~gu_str.str.lower().isin({"nan", "null", "none"})) & (gu_str != "0")
+gu_mask = ~gu_str.str.lower().isin(_GU_FALSY)
 ```
 
 Das Feld generalumgekehrt enthaelt die DVBelegnummer des Storno-GEGENBELEGS. Stornos erfolgen paarweise: Beleg A verweist auf B, Beleg B verweist auf A.
+
+> **KRITISCH v6.3.1:** Wenn generalumgekehrt als float geparst wird, enthält es "0.0" statt "0". Die alte Pruefung `!= "0"` war unzureichend. _GU_FALSY in buchungslogik.py ist die Single Source of Truth.
 
 ---
 
@@ -342,6 +345,7 @@ ABER: Stornos ausschliessen
 - **LEERER_BUCHUNGSTEXT nur PnL**: Bestandskonten/Kostenrechnung haben oft keinen sinnvollen Buchungstext -> nur Ertrag+Aufwand flaggen.
 - **Same-day-of-month Skip**: Monatliche Regelzahlungen am gleichen Kalendertag sind normal -> BELEG_KREDITOR Level 2 ueberspringen.
 - **Trailing Whitespace (Diamant fixed-width)**: Diamant exportiert Textfelder mit trailing Spaces. engine._prepare() stripped diese beim Kategorisieren. NICHT separat strippen — das passiert bereits zentral.
+- **DOPPELTE_BELEGNUMMER Performance**: transform("nunique") ist O(n*k), bei >100k Zeilen merge+nunique verwenden. Regulaere-Muster-Loop vektorisiert per MultiIndex.isin().
 
 ---
 
@@ -359,7 +363,7 @@ ABER: Stornos ausschliessen
 10. **Storno-Ausschluss**: Tests die _is_storno-Zeilen nicht rausfiltern produzieren Muell
 11. **Beleg-Ebene**: Duplikat-Tests muessen Beleg-interne Zeilen ignorieren
 12. **float64**: Immer float64 fuer _betrag/_abs, nie float32
-13. **Generalumgekehrt**: Pruefen auf nicht-leer, NICHT auf bestimmte Werte
+- **Generalumgekehrt**: Pruefen via _GU_FALSY frozenset aus buchungslogik.py, NICHT inline
 14. **critical sparsam setzen**: Nur wenn Flag ALLEIN den Output erzwingen soll (unabhaengig Score). STORNO ist NICHT critical (v6.2).
 15. **Storno-Regex synchron**: engine._prepare() und Storno.run() muessen identische Regex verwenden
 16. **LEERER_BUCHUNGSTEXT nur PnL**: Immer _kontoklasse.isin({"Ertrag", "Aufwand"}) pruefen
@@ -370,6 +374,7 @@ ABER: Stornos ausschliessen
 21. **Embeddings auf EngineStats**: Text-Embeddings NICHT in df.attrs speichern (bricht Parquet-Serialisierung). Immer stats.text_embeddings verwenden.
 22. **_kreditor_canonical nutzen**: Kreditor-Tests (NeuerKreditorHoch, BelegKreditorDuplikat, NearDuplicate) muessen _kreditor_canonical statt kreditor verwenden (Fallback auf kreditor wenn Clustering deaktiviert).
 23. **Graceful Degradation**: AI-Features (Embeddings, Clustering, Isolation) muessen ohne sentence-transformers/sklearn funktionieren. HAS_EMBEDDINGS/HAS_SKLEARN pruefen.
+24. **Dynamische Charts**: Fuer nutzerdefinierte Visualisierungen DynamicChartBuilder aus src/charts.py verwenden. Neue Chart-Typen in DYNAMIC_CHART_TYPES registrieren, nicht inline in app.py. classify_columns() fuer Dropdown-Befuellung. 3D-Charts NICHT in all_charts() aufnehmen (Performance).
 - **IMMER README.MD UND copilot-instructions.md AKTUALISIEREN nach Aenderungen, damit Copilot die neuesten Infos hat!**
 
 ---

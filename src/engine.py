@@ -28,7 +28,7 @@ from src.parser import COLUMN_ALIASES, parse_german_number_series, parse_date_se
 from src.tests.base import EngineStats
 from src.tests.betrag import get_tests as get_betrag_tests
 from src.tests.duplikate import get_tests as get_duplikate_tests
-from src.tests.buchungslogik import get_tests as get_buchungslogik_tests
+from src.tests.buchungslogik import get_tests as get_buchungslogik_tests, _GU_FALSY
 from src.tests.kreditor import get_tests as get_kreditor_tests
 from src.tests.zeitreihe import get_tests as get_zeitreihe_tests
 from src.tests.isolation_anomaly import get_tests as get_isolation_tests
@@ -101,12 +101,8 @@ class AnomalyEngine:
 
         # _is_storno: Generalumgekehrt (nicht-leer = Storno) ODER Buchungstext-Keywords
         gu = df.get("generalumgekehrt", pd.Series("", index=df.index))
-        gu_str = gu.astype(str).str.strip()
-        gu_storno = (
-            (gu_str != "")
-            & (~gu_str.str.lower().isin({"nan", "null", "none"}))
-            & (gu_str != "0")
-        )
+        gu_str = gu.astype(str).str.strip().str.rstrip(";")
+        gu_storno = ~gu_str.str.lower().isin(_GU_FALSY)
         txt = df["buchungstext"].astype(str).str.lower()
         txt_storno = txt.str.contains(r"storno|stornierung|r[uü]ckbuchung|gutschrift.*storn", regex=True, na=False)
         # "korrektur" nur bei negativem Betrag als Storno werten

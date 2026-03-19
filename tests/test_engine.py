@@ -989,10 +989,12 @@ class TestBetragByKontoklasse:
 
 
 class TestGeneralumgekehrtStorno:
-    """Generalumgekehrt-Kennzeichen triggert STORNO-Flag."""
+    """Generalumgekehrt-Kennzeichen triggert _is_storno (Ausschluss),
+    aber flag_STORNO nur bei text-basierten Stornos ohne GU-Referenz."""
 
-    def test_generalumgekehrt_1_flags_storno(self):
-        """Generalumgekehrt='1' setzt STORNO-Flag."""
+    def test_generalumgekehrt_sets_is_storno_but_no_flag(self):
+        """Generalumgekehrt='1' setzt _is_storno=True, aber KEIN flag_STORNO
+        (System-Storno mit GU-Referenz ist normal)."""
         df = _make_df(
             betrag=["500,00"],
             buchungstext=["Normaler Text"],
@@ -1001,7 +1003,8 @@ class TestGeneralumgekehrtStorno:
         engine = AnomalyEngine(df)
         engine._stats()
         engine._t15_storno()
-        assert engine.flag_counts["STORNO"] == 1
+        assert engine.flag_counts["STORNO"] == 0
+        assert engine.df["_is_storno"].iloc[0] == True
 
     def test_generalumgekehrt_empty_no_storno(self):
         """Leeres Generalumgekehrt löst keinen STORNO-Flag aus."""
@@ -1014,6 +1017,19 @@ class TestGeneralumgekehrtStorno:
         engine._stats()
         engine._t15_storno()
         assert engine.flag_counts["STORNO"] == 0
+
+    def test_text_storno_without_gu_is_flagged(self):
+        """Text-basierter Storno OHNE GU-Referenz → flag_STORNO (verdaechtig)."""
+        df = _make_df(
+            betrag=["500,00"],
+            buchungstext=["Stornierung Rechnung 4711"],
+            generalumgekehrt=[""],
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t15_storno()
+        assert engine.flag_counts["STORNO"] == 1
+        assert engine.df["_is_storno"].iloc[0] == True
 
 
 class TestRechnungsdatumBuchungsperiodeFallback:

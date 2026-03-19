@@ -329,20 +329,30 @@ class DoppelteBelegnummer(AnomalyTest):
         # Beleg-intern: Nur verschiedene _beleg_id's zählen
         has_beleg_id = "_beleg_id" in sub.columns
         if has_beleg_id:
-            grp_size = (
+            # Erst nunique pro Gruppe, dann per merge zurück-joinen (statt transform)
+            beleg_nunique = (
                 sub.groupby(group_cols, sort=False, observed=True)["_beleg_id"]
-                .transform("nunique")
+                .nunique()
+                .rename("_n_belege")
             )
+            grp_size = sub.merge(
+                beleg_nunique.reset_index(),
+                on=group_cols,
+                how="left",
+            )["_n_belege"]
+            grp_size.index = sub.index
         else:
             grp_size = sub.groupby(group_cols, sort=False, observed=True).transform("size")
             grp_size = grp_size.iloc[:, 0] if isinstance(grp_size, pd.DataFrame) else grp_size
 
-        # Reguläre Muster: grp_size auf 0 setzen
+        # Reguläre Muster: grp_size auf 0 setzen (vektorisiert per MultiIndex)
         if regular_beleg:
-            for key, grp in sub.groupby(group_cols, sort=False, observed=True):
-                k = key if isinstance(key, tuple) else (key,)
-                if k in regular_beleg:
-                    grp_size.loc[grp.index] = 0
+            key_idx = pd.MultiIndex.from_frame(sub[group_cols].astype(str))
+            reg_idx = pd.MultiIndex.from_tuples([
+                tuple(str(v) for v in k) for k in regular_beleg
+            ], names=group_cols)
+            is_regular = key_idx.isin(reg_idx)
+            grp_size.loc[sub.index[is_regular]] = 0
 
         # Soll/Haben-Paare vektorisiert ausschließen: S+H mit gleicher Belegnr. = Paar
         sh = sub.get("soll_haben", pd.Series("", index=sub.index)).astype(str).str.strip().str.upper()

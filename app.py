@@ -29,7 +29,9 @@ from src.validator import (
     ALL_TEST_NAMES, TEST_CATEGORIES,
     validate_columns, format_validation_report, ValidationResult,
 )
-from src.charts import ChartBuilder
+from src.charts import ChartBuilder, DynamicChartBuilder, DYNAMIC_CHART_TYPES, classify_columns, check_column_quality, _empty_figure
+
+import plotly.graph_objects as go
 
 # ── Logging ──────────────────────────────────────────────────
 setup_logging()
@@ -548,6 +550,75 @@ def generate_all_charts():
     return [charts.get(k) for k in keys]
 
 
+# ══════════════════════════════════════════════════════════════
+# DYNAMISCHER CHART-BUILDER (Event-Handler)
+# ══════════════════════════════════════════════════════════════
+
+_last_dynamic_fig: go.Figure | None = None
+
+
+def _populate_dynamic_dropdowns():
+    """Befüllt Dropdowns mit Spalten aus dem letzten Engine-DataFrame."""
+    if _last_engine_df is None:
+        empty = gr.update(choices=[], value=None)
+        return [empty] * 5
+
+    cols = classify_columns(_last_engine_df)
+    num_choices = cols["numeric"]
+    all_choices = cols["all"]
+    cat_choices = ["(keine)"] + cols["categorical"]
+    size_choices = ["(keine)"] + cols["numeric"]
+
+    return [
+        gr.update(choices=all_choices, value=all_choices[0] if all_choices else None),
+        gr.update(choices=num_choices, value=num_choices[0] if num_choices else None),
+        gr.update(choices=num_choices, value=num_choices[1] if len(num_choices) > 1 else None),
+        gr.update(choices=cat_choices, value="(keine)"),
+        gr.update(choices=size_choices, value="(keine)"),
+    ]
+
+
+def _toggle_z_axis(chart_type):
+    """Zeigt Z-Achse nur bei 3D-Charts."""
+    return gr.update(visible="3D" in chart_type)
+
+
+def _build_dynamic_chart(chart_type, x, y, z, color, size):
+    """Baut den dynamischen Chart."""
+    global _last_dynamic_fig
+    if _last_engine_df is None:
+        _last_dynamic_fig = None
+        return _empty_figure("Erst eine Analyse durchführen"), ""
+    builder = DynamicChartBuilder(_last_engine_df)
+    warnings = []
+    for col in [x, y, z]:
+        if col and col != "(keine)":
+            w = check_column_quality(_last_engine_df, col)
+            if w:
+                warnings.append(w)
+    fig = builder.build(chart_type, x, y, z, color, size)
+    _last_dynamic_fig = fig
+    return fig, "\n".join(warnings)
+
+
+def _export_chart_html():
+    """Exportiert den letzten dynamischen Chart als HTML."""
+    import tempfile
+    if _last_dynamic_fig is None:
+        return gr.update(value=None, visible=False)
+    path = os.path.join(tempfile.gettempdir(), f"chart_{int(time.time())}.html")
+    _last_dynamic_fig.write_html(path, include_plotlyjs="cdn")
+    return gr.update(value=path, visible=True)
+
+
+def _generate_3d_landscape():
+    """Generiert den vordefinierten 3D-Scatter."""
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.anomaly_landscape_3d()
+
+
 # ═══════════════════════════════════════════════════════════════
 # BUILD UI
 # ═══════════════════════════════════════════════════════════════
@@ -693,6 +764,57 @@ with gr.Blocks(
                     btn_sh_balance = gr.Button("▶ Soll/Haben-Balance", size="sm")
                     chart_sh_balance = gr.Plot(label="Soll/Haben-Balance")
 
+            gr.Markdown("### 3D-Ansichten")
+            with gr.Row():
+                with gr.Column():
+                    btn_3d_landscape = gr.Button("▶ 3D Anomalie-Landschaft", size="sm")
+                    chart_3d_landscape = gr.Plot(label="3D Anomalie-Landschaft")
+
+        with gr.Tab("🔬 Eigene Visualisierung"):
+            gr.Markdown(
+                "### Dynamischer Chart-Builder\n"
+                "Wähle Diagrammtyp und Achsen aus den verfügbaren Spalten. "
+                "Erst die Analyse abschließen, dann hier eigene Charts erstellen."
+            )
+            dyn_load_btn = gr.Button("🔄 Spalten laden", size="sm")
+            with gr.Row():
+                with gr.Column(scale=1):
+                    dyn_chart_type = gr.Dropdown(
+                        label="Diagrammtyp",
+                        choices=list(DYNAMIC_CHART_TYPES.keys()),
+                        value="Scatter",
+                    )
+                with gr.Column(scale=1):
+                    dyn_x = gr.Dropdown(label="X-Achse", choices=[], interactive=True)
+                with gr.Column(scale=1):
+                    dyn_y = gr.Dropdown(label="Y-Achse", choices=[], interactive=True)
+
+            with gr.Row():
+                with gr.Column(scale=1):
+                    dyn_z = gr.Dropdown(
+                        label="Z-Achse (nur 3D)",
+                        choices=[], interactive=True, visible=False,
+                    )
+                with gr.Column(scale=1):
+                    dyn_color = gr.Dropdown(
+                        label="Farbe (optional)",
+                        choices=[], interactive=True,
+                    )
+                with gr.Column(scale=1):
+                    dyn_size = gr.Dropdown(
+                        label="Größe (optional, nur Scatter)",
+                        choices=[], interactive=True,
+                    )
+
+            dyn_quality_warning = gr.Textbox(
+                label="Datenqualitäts-Hinweise", lines=2, interactive=False, visible=True,
+            )
+            with gr.Row():
+                dyn_build_btn = gr.Button("📊 Chart erstellen", variant="primary")
+                dyn_export_btn = gr.Button("📥 Als HTML exportieren", size="sm")
+            dyn_chart_output = gr.Plot(label="Dynamischer Chart")
+            dyn_export_file = gr.File(label="Chart-Download", visible=False)
+
         with gr.Tab("📁 History"):
             gr.Markdown("### Analyse-Verlauf")
             history_mandant = gr.Textbox(label="Mandant-ID", value="150")
@@ -758,13 +880,38 @@ with gr.Blocks(
     btn_zeitreihe.click(fn=generate_zeitreihe, inputs=[], outputs=[chart_zeitreihe])
     btn_sh_balance.click(fn=generate_sh_balance, inputs=[], outputs=[chart_sh_balance])
 
+    # ── Events: 3D-Preset ────────────────────────────────────
+    btn_3d_landscape.click(fn=_generate_3d_landscape, inputs=[], outputs=[chart_3d_landscape])
+
+    # ── Events: Dynamischer Chart-Builder ─────────────────────
+    dyn_load_btn.click(
+        fn=_populate_dynamic_dropdowns,
+        inputs=[],
+        outputs=[dyn_x, dyn_y, dyn_z, dyn_color, dyn_size],
+    )
+    dyn_chart_type.change(
+        fn=_toggle_z_axis,
+        inputs=[dyn_chart_type],
+        outputs=[dyn_z],
+    )
+    dyn_build_btn.click(
+        fn=_build_dynamic_chart,
+        inputs=[dyn_chart_type, dyn_x, dyn_y, dyn_z, dyn_color, dyn_size],
+        outputs=[dyn_chart_output, dyn_quality_warning],
+    )
+    dyn_export_btn.click(
+        fn=_export_chart_html,
+        inputs=[],
+        outputs=[dyn_export_file],
+    )
+
     gr.Markdown(
         "---\n"
-        "**13 Tests:** Z-Score | IQR | Konto-Betrag | Near-Duplicate | "
+        "**14 Tests:** Z-Score | IQR | Konto-Betrag | Near-Duplicate | "
         "Doppelte Belegnummer | Beleg-Kreditor-Duplikat | Storno | "
         "Leerer Buchungstext | Rechnungsdatum-Periode | Buchungstext-Periode | "
         "Neuer Kreditor | "
-        "Monats-Entwicklung | Fehlende Monatsbuchung"
+        "Monats-Entwicklung | Fehlende Monatsbuchung | Isolation-Anomalie"
     )
 
 

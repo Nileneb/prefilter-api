@@ -233,7 +233,11 @@ def read_upload(filepath: str) -> pd.DataFrame:
         text = f.read()
     for sep in ["|", ";", ",", "\t"]:
         try:
-            df = pd.read_csv(io.StringIO(text), sep=sep, dtype=str)
+            data = text
+            # Diamant-Export: Pipe-Delimiter mit trailing Semicolons pro Zeile
+            if sep == "|":
+                data = re.sub(r';+\s*$', '', data, flags=re.MULTILINE)
+            df = pd.read_csv(io.StringIO(data), sep=sep, dtype=str)
             if len(df.columns) >= 3:
                 return _clean_null_strings(df)
         except Exception:

@@ -36,6 +36,17 @@ Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Expo
 - **Dockerfile**: Embedding-Modell wird beim Build vorgeladen (Layer-Cache).
 - **Neue Config-Parameter**: `near_duplicate_text_similarity`, `kreditor_clustering_enabled`, `kreditor_clustering_eps`, `isolation_enabled`, `isolation_contamination`
 
+### v6.3.1 — Dynamischer Chart-Builder + Bugfixes
+
+- **Dynamischer Chart-Builder** (`src/charts.py`): Neuer Tab "🔬 Eigene Visualisierung" erlaubt nutzerdefinierte Chart-Erstellung mit wählbarem Diagrammtyp, Achsen, Farbe und Größe. 8 Diagrammtypen inkl. **Scatter 3D**.
+- **`DynamicChartBuilder` Klasse**: Erstellt Charts dynamisch basierend auf User-Auswahl. Abgeleitete Spalten (Wochentag, Monat, Quartal, Risiko-Kategorie, Betrags-Klasse, Anzahl Flags) werden automatisch hinzugefügt.
+- **`classify_columns()`**: Kategorisiert DataFrame-Spalten für Dropdown-Befüllung (numeric, categorical, datetime).
+- **3D Anomalie-Landschaft**: Vordefinierter `anomaly_landscape_3d()` Chart im Visualisierungen-Tab (Betrag × Konto × Zeit, Farbe = Score).
+- **HTML-Export**: Dynamische Charts als standalone HTML exportierbar.
+- **Datenqualitäts-Hinweise**: Warnung wenn gewählte Spalte >50% NaN hat.
+- **STORNO _GU_FALSY Bugfix**: `generalumgekehrt` als float geparst ("0.0") wird jetzt korrekt als Nicht-Storno erkannt. Neue `_GU_FALSY` Konstante als Single Source of Truth.
+- **DOPPELTE_BELEGNUMMER Performance**: `transform("nunique")` durch `groupby().nunique()` + `merge()` ersetzt, reguläre Muster per vektorisiertem `MultiIndex.isin()` statt iterativem Loop.
+
 ---
 
 ## Schnellstart
