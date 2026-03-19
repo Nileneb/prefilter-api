@@ -16,12 +16,30 @@ import plotly.graph_objects as go
 
 from src.accounting import kontoklasse
 
+_CHART_MAX_ROWS = 500_000
+
+
+def _downsample_for_charts(df: pd.DataFrame, max_rows: int = _CHART_MAX_ROWS) -> pd.DataFrame:
+    """Sampelt den DataFrame herunter wenn er zu groß ist.
+
+    Strategie: Alle geflaggten Zeilen behalten + zufällige Stichprobe
+    des Rests bis max_rows erreicht sind.
+    """
+    if len(df) <= max_rows:
+        return df
+    flagged = df[df["_score"] > 0]
+    unflagged = df[df["_score"] <= 0]
+    remaining = max(0, max_rows - len(flagged))
+    if remaining > 0 and len(unflagged) > remaining:
+        unflagged = unflagged.sample(n=remaining, random_state=42)
+    return pd.concat([flagged, unflagged], ignore_index=True)
+
 
 class ChartBuilder:
     """Baut Plotly-Charts aus dem DataFrame nach dem Engine-Run."""
 
     def __init__(self, df: pd.DataFrame, result: dict):
-        self.df = df
+        self.df = _downsample_for_charts(df)
         self.result = result
 
     # ── Phase 1: Überblicks-Dashboards ────────────────────────
