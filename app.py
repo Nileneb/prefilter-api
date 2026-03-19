@@ -59,6 +59,9 @@ except Exception:
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 _current_job_id: str | None = None
+_last_engine_df: pd.DataFrame | None = None   # für on-demand Charts
+_last_result: dict | None = None
+_last_file_path: str | None = None            # für Chart-Rebuild im Worker-Modus
 
 
 # ══════════════════════════════════════════════════════════════
@@ -100,13 +103,14 @@ def _format_result(result: dict, webhook_url: str) -> tuple[str, pd.DataFrame]:
         sorted(stats["flag_counts"].items(), key=lambda x: -x[1]) if v > 0
     )
 
+    max_score = stats.get('max_possible_score', '?')
     summary = (
         f"Analyse abgeschlossen\n\n"
         f"Gesamt: {stats['total_input']} Buchungen\n"
         f"Verdaechtig: {stats['total_suspicious']} ({stats['filter_ratio']})\n"
         f"Ausgegeben: {stats['total_output']}"
         f"{' (limitiert auf Top ' + str(stats['total_output']) + ' nach Score)' if stats['total_output'] < stats['total_suspicious'] else ''}\n"
-        f"Avg Score: {stats['avg_score']}\n\n"
+        f"Avg Score: {stats['avg_score']}/{max_score}\n\n"
         f"Buchungs-Flags:\n{flag_str}\n"
     )
 
@@ -115,7 +119,7 @@ def _format_result(result: dict, webhook_url: str) -> tuple[str, pd.DataFrame]:
         summary += "\nTop-3 verdaechtige Buchungen:\n"
         for i, r in enumerate(top3, 1):
             summary += (
-                f"  {i}. {r['belegnummer']}  Score={r['anomaly_score']}  "
+                f"  {i}. Beleg {r['belegnummer']}  Score={r['anomaly_score']}/{max_score}  "
                 f"Betrag={r['betrag']:.2f}EUR\n"
                 f"     Flags: {r['anomaly_flags']}\n"
             )
@@ -198,28 +202,18 @@ def analyze_file(
 ):
     """Generator: yielded (summary, logs, table, csv, charts...) bei jedem Schritt."""
     global _current_job_id
+    global _last_engine_df, _last_result, _last_file_path
     _current_job_id = None
+    _last_engine_df = None
+    _last_result = None
+    _last_file_path = None
     live_log_lines: list[str] = []
-
-    _CHART_KEYS = [
-        "score_distribution", "flag_frequency", "monthly_pnl", "top_accounts",
-        "ertrag_aufwand_monthly", "volume_heatmap", "betrag_vs_score",
-        "kreditor_treemap", "zeitreihe_konto", "soll_haben_balance",
-    ]
-    _empty_charts = [gr.update(value=None) for _ in _CHART_KEYS]
 
     def log(msg: str) -> None:
         live_log_lines.append(f"[{_ts()}] {msg}")
 
-    def current_state(summary="", table=None, csv_path=None, charts=None):
-        base = (summary, "\n".join(live_log_lines), table, gr.update(value=csv_path, visible=csv_path is not None))
-        chart_updates = []
-        if charts:
-            for k in _CHART_KEYS:
-                chart_updates.append(gr.update(value=charts.get(k)))
-        else:
-            chart_updates = _empty_charts
-        return base + tuple(chart_updates)
+    def current_state(summary="", table=None, csv_path=None):
+        return (summary, "\n".join(live_log_lines), table, gr.update(value=csv_path, visible=csv_path is not None))
 
     if file is None:
         yield current_state("Bitte eine Datei hochladen.")
@@ -297,8 +291,13 @@ def analyze_file(
 
         summary, display_df = _format_result(result, webhook_url)
         csv_path = _save_csv(display_df)
-        charts = _build_charts(engine.df, result)
-        yield current_state(summary, display_df, csv_path, charts)
+
+        # Engine-Daten für on-demand Charts speichern
+        _last_engine_df = engine.df
+        _last_result = result
+        log("📊 Charts können jetzt einzeln im Tab 'Visualisierungen' generiert werden.")
+
+        yield current_state(summary, display_df, csv_path)
         return
 
     # ── Worker-Modus (Redis + Celery) ─────────────────────────
@@ -383,7 +382,11 @@ def analyze_file(
 
     summary, display_df = _format_result(result, webhook_url)
     csv_path = _save_csv(display_df)
-    # Worker-Modus: Charts nur möglich falls voller DataFrame verfügbar
+    # Worker-Modus: Result + Dateipfad speichern für Chart-Rebuild
+    _last_result = result
+    _last_file_path = dest
+    _last_engine_df = None  # wird on-demand beim ersten Chart-Klick gebaut
+    log("📊 Charts können jetzt im Tab 'Visualisierungen' generiert werden.")
     yield current_state(summary, display_df, csv_path)
 
 
@@ -394,6 +397,131 @@ def cancel_analysis():
         _r.set(f"job:{_current_job_id}:cancelled", "1", ex=JOB_TTL)
         _r.hset(f"job:{_current_job_id}", "status", "cancelling")
     return "Abbruch-Signal gesendet -- wird nach dem laufenden Test wirksam."
+
+
+# ══════════════════════════════════════════════════════════════
+# ON-DEMAND CHART FUNKTIONEN
+# ══════════════════════════════════════════════════════════════
+
+def _rebuild_df_for_charts(filepath: str, result: dict) -> pd.DataFrame | None:
+    """Baut den Engine-DataFrame aus der Originaldatei für Charts nach.
+
+    Liest die Datei, bereitet Spalten vor (_prepare), setzt dann Flags+Scores
+    aus dem gespeicherten Result. KEINE Tests werden nochmal ausgeführt.
+    """
+    from src.parser import read_upload, map_columns
+    from src.engine import AnomalyEngine
+    try:
+        df = read_upload(filepath)
+        df = map_columns(df)
+        engine = AnomalyEngine(df)  # _prepare() wird in __init__ aufgerufen
+        # Flag-Spalten + Score initialisieren (alle False / 0)
+        for flag_name in result.get("statistics", {}).get("flag_counts", {}).keys():
+            col = f"flag_{flag_name}"
+            if col not in engine.df.columns:
+                engine.df[col] = False
+        if "_score" not in engine.df.columns:
+            engine.df["_score"] = 0.0
+        return engine.df
+    except Exception as exc:
+        logger.error("Chart-Rebuild fehlgeschlagen: %s", exc, exc_info=True)
+        return None
+
+def _get_chart_builder() -> ChartBuilder | None:
+    """Gibt einen ChartBuilder zurück wenn Analysedaten vorhanden, sonst None."""
+    global _last_engine_df
+    if _last_result is None:
+        return None
+    # Lazy-Rebuild: Im Worker-Modus wird der DataFrame beim ersten Chart-Klick gebaut
+    if _last_engine_df is None and _last_file_path is not None:
+        _last_engine_df = _rebuild_df_for_charts(_last_file_path, _last_result)
+    if _last_engine_df is None:
+        return None
+    return ChartBuilder(_last_engine_df, _last_result)
+
+
+def generate_score_distribution():
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.score_distribution()
+
+
+def generate_flag_frequency():
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.flag_frequency()
+
+
+def generate_monthly_pnl():
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.monthly_pnl()
+
+
+def generate_top_accounts():
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.top_accounts()
+
+
+def generate_ertrag_aufwand():
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.ertrag_aufwand_monthly()
+
+
+def generate_heatmap():
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.volume_heatmap()
+
+
+def generate_betrag_vs_score():
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.betrag_vs_score()
+
+
+def generate_treemap():
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.kreditor_treemap()
+
+
+def generate_zeitreihe():
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.zeitreihe_konto()
+
+
+def generate_sh_balance():
+    b = _get_chart_builder()
+    if b is None:
+        return gr.update(value=None)
+    return b.soll_haben_balance()
+
+
+def generate_all_charts():
+    """Alle 10 Charts auf einmal generieren."""
+    b = _get_chart_builder()
+    if b is None:
+        return [gr.update(value=None)] * 10
+    charts = b.all_charts()
+    keys = [
+        "score_distribution", "flag_frequency", "monthly_pnl", "top_accounts",
+        "ertrag_aufwand_monthly", "volume_heatmap", "betrag_vs_score",
+        "kreditor_treemap", "zeitreihe_konto", "soll_haben_balance",
+    ]
+    return [charts.get(k) for k in keys]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -497,23 +625,49 @@ with gr.Blocks(
                 label="Live-Log", lines=25, interactive=False,
             )
         with gr.Tab("📊 Visualisierungen"):
+            gr.Markdown(
+                "### Charts on-demand generieren\n"
+                "Erst die Analyse abschließen, dann einzelne Charts per Klick generieren. "
+                "Bei großen Datensätzen wird automatisch eine Stichprobe verwendet."
+            )
+            all_charts_btn = gr.Button("📊 Alle Charts generieren", variant="primary")
             gr.Markdown("### Überblicks-Dashboards")
             with gr.Row():
-                chart_score_dist = gr.Plot(label="Score-Verteilung")
-                chart_flag_freq  = gr.Plot(label="Flag-Häufigkeit")
+                with gr.Column():
+                    btn_score_dist = gr.Button("▶ Score-Verteilung", size="sm")
+                    chart_score_dist = gr.Plot(label="Score-Verteilung")
+                with gr.Column():
+                    btn_flag_freq = gr.Button("▶ Flag-Häufigkeit", size="sm")
+                    chart_flag_freq = gr.Plot(label="Flag-Häufigkeit")
             with gr.Row():
-                chart_monthly_pnl = gr.Plot(label="Monatliche Betrags-Entwicklung")
-                chart_top_acc     = gr.Plot(label="Top-Konten nach Score")
+                with gr.Column():
+                    btn_monthly_pnl = gr.Button("▶ Monatliche Betrags-Entwicklung", size="sm")
+                    chart_monthly_pnl = gr.Plot(label="Monatliche Betrags-Entwicklung")
+                with gr.Column():
+                    btn_top_acc = gr.Button("▶ Top-Konten nach Score", size="sm")
+                    chart_top_acc = gr.Plot(label="Top-Konten nach Score")
             with gr.Row():
-                chart_ertrag_aufw = gr.Plot(label="Ertrag vs. Aufwand")
-                chart_heatmap     = gr.Plot(label="Buchungsvolumen-Heatmap")
+                with gr.Column():
+                    btn_ertrag_aufw = gr.Button("▶ Ertrag vs. Aufwand", size="sm")
+                    chart_ertrag_aufw = gr.Plot(label="Ertrag vs. Aufwand")
+                with gr.Column():
+                    btn_heatmap = gr.Button("▶ Buchungsvolumen-Heatmap", size="sm")
+                    chart_heatmap = gr.Plot(label="Buchungsvolumen-Heatmap")
             gr.Markdown("### Anomalie-Details")
             with gr.Row():
-                chart_scatter     = gr.Plot(label="Betrag vs. Score")
-                chart_treemap     = gr.Plot(label="Kreditor-Treemap")
+                with gr.Column():
+                    btn_scatter = gr.Button("▶ Betrag vs. Score", size="sm")
+                    chart_scatter = gr.Plot(label="Betrag vs. Score")
+                with gr.Column():
+                    btn_treemap = gr.Button("▶ Kreditor-Treemap", size="sm")
+                    chart_treemap = gr.Plot(label="Kreditor-Treemap")
             with gr.Row():
-                chart_zeitreihe   = gr.Plot(label="Zeitreihe (Top-Konto)")
-                chart_sh_balance  = gr.Plot(label="Soll/Haben-Balance")
+                with gr.Column():
+                    btn_zeitreihe = gr.Button("▶ Zeitreihe (Top-Konto)", size="sm")
+                    chart_zeitreihe = gr.Plot(label="Zeitreihe (Top-Konto)")
+                with gr.Column():
+                    btn_sh_balance = gr.Button("▶ Soll/Haben-Balance", size="sm")
+                    chart_sh_balance = gr.Plot(label="Soll/Haben-Balance")
 
     # ── Event: File-Upload → Validierung ──────────────────────
     file_input.change(
@@ -533,9 +687,6 @@ with gr.Blocks(
         ],
         outputs=[
             summary_output, logs_output, table_output, export_file,
-            chart_score_dist, chart_flag_freq, chart_monthly_pnl, chart_top_acc,
-            chart_ertrag_aufw, chart_heatmap, chart_scatter, chart_treemap,
-            chart_zeitreihe, chart_sh_balance,
         ],
     )
 
@@ -544,6 +695,25 @@ with gr.Blocks(
         inputs=[],
         outputs=[summary_output],
     )
+
+    # ── Events: Einzelne Charts on-demand ─────────────────────
+    all_chart_outputs = [
+        chart_score_dist, chart_flag_freq, chart_monthly_pnl, chart_top_acc,
+        chart_ertrag_aufw, chart_heatmap, chart_scatter, chart_treemap,
+        chart_zeitreihe, chart_sh_balance,
+    ]
+    all_charts_btn.click(fn=generate_all_charts, inputs=[], outputs=all_chart_outputs)
+
+    btn_score_dist.click(fn=generate_score_distribution, inputs=[], outputs=[chart_score_dist])
+    btn_flag_freq.click(fn=generate_flag_frequency, inputs=[], outputs=[chart_flag_freq])
+    btn_monthly_pnl.click(fn=generate_monthly_pnl, inputs=[], outputs=[chart_monthly_pnl])
+    btn_top_acc.click(fn=generate_top_accounts, inputs=[], outputs=[chart_top_acc])
+    btn_ertrag_aufw.click(fn=generate_ertrag_aufwand, inputs=[], outputs=[chart_ertrag_aufw])
+    btn_heatmap.click(fn=generate_heatmap, inputs=[], outputs=[chart_heatmap])
+    btn_scatter.click(fn=generate_betrag_vs_score, inputs=[], outputs=[chart_scatter])
+    btn_treemap.click(fn=generate_treemap, inputs=[], outputs=[chart_treemap])
+    btn_zeitreihe.click(fn=generate_zeitreihe, inputs=[], outputs=[chart_zeitreihe])
+    btn_sh_balance.click(fn=generate_sh_balance, inputs=[], outputs=[chart_sh_balance])
 
     gr.Markdown(
         "---\n"

@@ -265,13 +265,13 @@ def merge_task(self, test_results: list[dict], prepare_result: dict) -> str:
         raise
 
     finally:
-        # Cleanup: Parquet + Original-Datei löschen
-        for path in (prepare_result.get("parquet_path"), prepare_result.get("filepath")):
-            if path:
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+        # Cleanup: nur Parquet löschen — Original-CSV bleibt für UI-Charts
+        parquet = prepare_result.get("parquet_path")
+        if parquet:
+            try:
+                os.unlink(parquet)
+            except OSError:
+                pass
         r.close()
 
 
@@ -360,12 +360,7 @@ def analyze_task(self, job_id: str, filepath: str, config_dict: dict, enabled_te
         raise
 
     finally:
-        # Quelldatei nur im sequentiellen Pfad löschen; parallel macht merge_task
-        if n_rows < PARALLEL_THRESHOLD:
-            try:
-                os.unlink(filepath)
-            except OSError:
-                pass
+        # Original-CSV NICHT löschen — UI braucht sie für on-demand Charts
         r.close()
 
 

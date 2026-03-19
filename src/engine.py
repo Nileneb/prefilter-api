@@ -47,6 +47,7 @@ WEIGHTS: dict[str, float]    = {t.name: t.weight for t in _ALL_TESTS}
 CRITICAL_FLAGS: set[str]     = {t.name for t in _ALL_TESTS if t.critical}
 _FLAG_NAMES: list[str]       = [t.name for t in _ALL_TESTS]
 NUM_TESTS: int               = len(_ALL_TESTS)
+MAX_POSSIBLE_SCORE: float    = sum(WEIGHTS.values())  # Summe aller Test-Gewichte
 OUTPUT_THRESHOLD: float      = 2.0   # Default — überschreibbar per config
 MAX_OUTPUT_ROWS: int         = 1000  # Default
 
@@ -257,15 +258,16 @@ class AnomalyEngine:
             ((k, v) for k, v in self.flag_counts.items() if v > 0),
             key=lambda x: -x[1],
         )
+        max_score = MAX_POSSIBLE_SCORE
         summary_lines = [
             f"ERGEBNIS: {n_verd} von {total} verdächtig ({pct:.1f}%)",
             f"Ausgegeben: {n_output} (Top {n_output} nach Score)" if n_output < n_verd else f"Ausgegeben: {n_output}",
-            f"Flags gesamt: {sum(self.flag_counts.values())}, Ø Score: {avg_score}",
+            f"Flags gesamt: {sum(self.flag_counts.values())}, Ø Score: {avg_score}/{max_score}",
             f"Top-Flags: {', '.join(f'{k}:{v}' for k, v in top_flags) or 'keine'}",
         ]
         if rows:
             summary_lines.append(
-                f"Höchster Score: {rows[0]['anomaly_score']} ({rows[0]['belegnummer']})"
+                f"Höchster Score: {rows[0]['anomaly_score']}/{max_score} (Beleg: {rows[0]['belegnummer']})"
             )
         for line in summary_lines:
             self._log(line)
@@ -278,6 +280,7 @@ class AnomalyEngine:
                 "total_output":     n_output,
                 "filter_ratio":     f"{pct:.1f}%",
                 "avg_score":        avg_score,
+                "max_possible_score": MAX_POSSIBLE_SCORE,
                 "flag_counts":      self.flag_counts,
             },
             "verdaechtige_buchungen": rows,
