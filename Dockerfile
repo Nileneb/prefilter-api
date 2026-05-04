@@ -7,6 +7,8 @@ WORKDIR /app
 # Fallback: requirements.txt (loose pins) when lock doesn't exist yet
 COPY requirements.txt .
 COPY requirements.loc[k] .
+# Install CPU-only torch first — prevents pip from pulling CUDA packages (server has no GPU)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN if [ -f requirements.lock ]; then \
       pip install --no-cache-dir -r requirements.lock; \
     else \
