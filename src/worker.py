@@ -418,6 +418,7 @@ def _run_sequential(r, job_id: str, df, config_dict: dict, start_time: float, en
 
     # Flags-Parquet für UI-Charts speichern (nur flag_* + _score)
     flags_dir = os.environ.get("UPLOAD_DIR", "/tmp/prefilter")
+    os.makedirs(flags_dir, exist_ok=True)
     flags_path = os.path.join(flags_dir, f"job_{job_id}_flags.parquet")
     flag_cols = [c for c in engine.df.columns if c.startswith("flag_")] + ["_score"]
     engine.df[flag_cols].to_parquet(flags_path, index=True)

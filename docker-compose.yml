@@ -46,6 +46,7 @@ services:
         required: false
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - UPLOAD_DIR=/data/uploads
       - PARALLEL_THRESHOLD=${PARALLEL_THRESHOLD:-100000}
       - LOG_FORMAT=${LOG_FORMAT:-json}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
