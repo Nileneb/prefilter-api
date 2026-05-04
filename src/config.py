@@ -139,6 +139,20 @@ class AnalysisConfig(BaseModel):
         description="Erwarteter Anomalie-Anteil für Isolation Forest (Standard: 0.02 = 2%)",
     )
 
+    # ── Text-Konto-Match ─────────────────────────────────────────────────────
+    text_konto_threshold: float = Field(
+        0.3, ge=0.0, le=1.0,
+        description="Cosine-Similarity-Schwelle für TEXT_KONTO_MATCH (Standard: 0.3). Unter diesem Wert = Anomalie.",
+    )
+    text_konto_min_bookings: int = Field(
+        5, ge=1,
+        description="Mindestanzahl Buchungen pro Konto für TEXT_KONTO_MATCH (Standard: 5).",
+    )
+    text_konto_gt_path: str | None = Field(
+        "docs/gt_lookup.csv",
+        description="Pfad zur Ground-Truth-CSV (konto_soll,gt_bezeichnung). None = Diamant-Bezeichnung.",
+    )
+
     # ── Gelernte Gewichte (via Feedback-Training) ─────────────
     custom_weights: dict[str, float] | None = Field(
         None,

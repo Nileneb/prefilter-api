@@ -222,6 +222,7 @@ def analyze_file(
     near_duplicate_days: int,
     output_threshold: float,
     prefix_ignore: str,
+    text_konto_threshold: float,
     *test_toggles,
 ):
     """Generator: yielded (summary, logs, table, csv, charts...) bei jedem Schritt."""
@@ -268,6 +269,7 @@ def analyze_file(
         "near_duplicate_days": int(near_duplicate_days),
         "output_threshold":    output_threshold,
         "doppelte_beleg_prefix_ignore": prefix_ignore.strip() if prefix_ignore else "",
+        "text_konto_threshold": text_konto_threshold,
     }
 
     # ── Lokaler Fallback-Modus ────────────────────────────────
@@ -760,6 +762,12 @@ with gr.Blocks(
                 value="",
                 info="Belegnummern mit diesen Präfixen werden bei DOPPELTE_BELEGNUMMER ignoriert",
             )
+        with gr.Row():
+            text_konto_slider = gr.Slider(
+                minimum=0.05, maximum=0.95, value=0.3, step=0.05,
+                label="TEXT_KONTO_MATCH Threshold (Cosine-Similarity)",
+                info="Buchungstext ↔ Kontobezeichnung: unter diesem Wert → Anomalie (Standard: 0.30)",
+            )
 
     # ── Test-Konfiguration (14 Checkboxen) ────────────────────
     test_checkboxes: list[gr.Checkbox] = []
@@ -930,6 +938,7 @@ with gr.Blocks(
             file_input, webhook_input,
             zscore_slider, iqr_slider, near_dup_slider, threshold_slider,
             prefix_ignore_input,
+            text_konto_slider,
             *test_checkboxes,
         ],
         outputs=[

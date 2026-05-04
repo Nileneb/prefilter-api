@@ -32,6 +32,7 @@ from src.tests.buchungslogik import get_tests as get_buchungslogik_tests, _GU_FA
 from src.tests.kreditor import get_tests as get_kreditor_tests
 from src.tests.zeitreihe import get_tests as get_zeitreihe_tests
 from src.tests.isolation_anomaly import get_tests as get_isolation_tests
+from src.tests.text_konto_match import get_tests as get_text_match_tests
 from src import history
 
 logger = get_logger("prefilter.engine")
@@ -45,6 +46,7 @@ _ALL_TESTS = (
     + get_kreditor_tests()
     + get_zeitreihe_tests()
     + get_isolation_tests()
+    + get_text_match_tests()
 )
 
 # Abgeleitete Lookup-Strukturen
