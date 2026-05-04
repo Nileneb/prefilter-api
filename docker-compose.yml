@@ -53,6 +53,7 @@ services:
       - HISTORY_DIR=/data/history
       - UPLOAD_STORE_DIR=/data/upload-store
       - FEEDBACK_DIR=/data/feedback
+      - TZ=Europe/Berlin
     volumes:
       - uploads:/data/uploads
       - ./logs:/data/logs

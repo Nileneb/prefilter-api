@@ -1,13 +1,13 @@
 # Prefilter-API — Copilot Instructions
 
-> **Stand: 2026-03-19 · Version 6.3.2 — PARALLEL-PIPELINE-FIX + CHARTS**
+> **Stand: 2026-03-19 · Version 7.0 — CONSISTENCY + FEEDBACK-LOOP**
 > Dieses Dokument ist die einzige Wahrheitsquelle für Architektur, Konventionen und Domain-Logik.
 PYTHON ENV VERWENDEN!!!!!!!!!!!!!!!!!!!!!!!!!!!!! AUCH FÜR TESTS!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ---
 
 ## Projektuebersicht
 
-Buchungs-Anomalie Pre-Filter v6.3: Gradio-Web-App die CSV/XLS/XLSX-Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) durch **14 statistische Anomalie-Tests** laufen laesst und verdaechtige Buchungen an einen Langdock Agent weiterleitet. Betrieb ausschliesslich via Docker Compose.
+Buchungs-Anomalie Pre-Filter v7.0: Gradio-Web-App die CSV/XLS/XLSX-Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) durch **14 statistische Anomalie-Tests** laufen laesst und verdaechtige Buchungen an einen Langdock Agent weiterleitet. Betrieb ausschliesslich via Docker Compose.
 
 ### KRITISCH: Diamant-Datenmodell verstehen
 
@@ -63,6 +63,9 @@ User --> Gradio UI |  app.py  |--> Redis --> Celery Worker(s)
 - **src/kreditor_clustering.py**: DBSCAN auf Kreditor-Embeddings fuer kanonische Namen (_kreditor_canonical). (NEU v6.3)
 - **src/file_store.py**: Persistente Speicherung von Uploads + Analyse-Ergebnissen (NEU v6.1).
 - **src/history.py**: Monatsdurchschnitte pro Konto persistent speichern, Trend-Erkennung.
+- **src/feedback.py**: FeedbackStore + FeedbackLabel (JSONL per Mandant). Schwellen: MIN_LABELS_FOR_STATS=200, MIN_LABELS_FOR_TRAINING=500. (NEU v7.0)
+- **src/feedback_stats.py**: Precision/FP-Rate pro Flag aus Labels. format_feedback_report(). (NEU v7.0)
+- **src/trainer.py**: ScoreReweighter — berechnet custom_weights aus Feedback. Hard-locked bis 500 Labels. (NEU v7.0)
 
 ---
 
@@ -182,7 +185,7 @@ COLUMN_ALIASES = {
     "belegnummer":        ["belegnummer", "beleg", "belegnr", "beleg_nr", "voucher"],
     "kostenstelle":       ["kostenstelle", "kst", "cost_center"],
     "kreditor":           ["kreditor", "lieferant", "vendor", "supplier", "creditor", "bezeichnung"],
-    "soll_haben":         ["soll_haben", "sollhaben", "s_h", "sh", "soll/haben"],
+    "soll_haben":         ["soll_haben", "sollhaben", "s_h", "sh", "soll/haben", "l"],
     "klasse":             ["klasse", "class"],
     "generalumgekehrt":   ["generalumgekehrt", "storno_kz", "umkehr"],
     "buchungsperiode":    ["buchungsperiode", "periode", "period"],
@@ -304,7 +307,8 @@ ABER: Stornos ausschliessen
 | _beleg_id | str | dvbelegnummer oder belegnummer Fallback | Beleg-Gruppierung |
 | _betrag_signed | float64 | compute_signed_betrag(df) | PnL-Charts |
 | _kreditor_canonical | str | cluster_kreditors() oder Fallback auf kreditor | Kreditor-Tests (v6.3) |
-| _score | float64 | Summe Flag-Gewichte | Anomalie-Ranking |
+| _konto_haben_inferred | bool | find_counterpart_rows() (2-Paar-Heuristik) | Markiert inferierte konto_haben-Werte (v7.0) |
+| _score | float64 | Summe Flag-Gewichte (ggf. custom_weights) | Anomalie-Ranking |
 
 > **WICHTIG float64:** v5.1 nutzte float32 -> Rundungsfehler. v6.0 nutzt float64.
 > **NEU v6.3:** text_embeddings werden auf EngineStats gespeichert (stats.text_embeddings), NICHT in df.attrs (Parquet-Serialisierung!).
@@ -377,11 +381,16 @@ ABER: Stornos ausschliessen
 24. **Dynamische Charts**: Fuer nutzerdefinierte Visualisierungen DynamicChartBuilder aus src/charts.py verwenden. Neue Chart-Typen in DYNAMIC_CHART_TYPES registrieren, nicht inline in app.py. classify_columns() fuer Dropdown-Befuellung. 3D-Charts NICHT in all_charts() aufnehmen (Performance).
 25. **Worker Charts: Flags-Parquet**: Worker (sequentiell + parallel) speichert nach Analyse ein separates Parquet mit nur flag_* + _score Spalten. app.py laedt dieses in _rebuild_df_for_charts() fuer korrekte Chart-Darstellung im Worker-Modus. Ohne Flags-Parquet sind alle Charts leer (Flags=False, Score=0).
 26. **Trailing Semicolons (Diamant)**: Pipe-delimited Diamant-Export hat trailing `"NULL;;;;;"`. Parser stripped `;+\s*$` vor dem Einlesen. Engine stripped `.str.rstrip(";")` auf generalumgekehrt als Safety-Net.
+27. **Feedback-Labels**: FeedbackStore aus src/feedback.py nutzen. Labels sind tp/fp/unsure. JSONL per Mandant, Path-Traversal-Schutz via Sanitize. MIN_LABELS_FOR_STATS=200, MIN_LABELS_FOR_TRAINING=500.
+28. **Training gesperrt**: ScoreReweighter in src/trainer.py wirft TrainingLocked bei <500 Labels. Kein Bypass. custom_weights in AnalysisConfig setzen um gelernte Gewichte anzuwenden.
+29. **custom_weights**: _compute_scores() nutzt config.custom_weights wenn gesetzt. Gewichte muessen im Bereich [0.1, 5.0] liegen. None = Default-WEIGHTS.
+30. **find_counterpart_rows**: Konservative 2-Paar-Heuristik fuer konto_haben-Inferenz. Nur bei exakt 2 Zeilen pro _beleg_id mit gleichen Betraegen. _konto_haben_inferred Boolean-Spalte.
+31. **soll_haben Alias "l"**: Diamant-Spalte "L" wird als soll_haben erkannt.
 - **IMMER README.MD UND copilot-instructions.md AKTUALISIEREN nach Aenderungen, damit Copilot die neuesten Infos hat!**
 
 ---
 
-## Konfigurations-Defaults (src/config.py) — Stand v6.3
+## Konfigurations-Defaults (src/config.py) — Stand v7.0
 
 | Parameter | Default | Beschreibung |
 |---|---|---|
@@ -398,3 +407,4 @@ ABER: Stornos ausschliessen
 | kreditor_clustering_eps | **0.20** | DBSCAN epsilon (Cosine-Distanz) **(NEU v6.3)** |
 | isolation_enabled | **False** | Isolation-Forest-Test aktivieren **(NEU v6.3)** |
 | isolation_contamination | **0.02** | Erwarteter Anomalie-Anteil **(NEU v6.3)** |
+| custom_weights | **None** | Vom Trainer gelernte Flag-Gewichte. Dict[str, float] oder None. **(NEU v7.0)** |

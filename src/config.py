@@ -113,8 +113,8 @@ class AnalysisConfig(BaseModel):
         description="Score-Schwellenwert für Output (Standard: 2.0)",
     )
     max_output_rows: int = Field(
-        1000, ge=1,
-        description="Maximale Anzahl Ausgabezeilen (Standard: 1000)",
+        0, ge=0,
+        description="Maximale Anzahl Ausgabezeilen (0 = unbegrenzt)",
     )
 
     # ── AI / Embedding-Features ──────────────────────────────

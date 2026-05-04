@@ -54,7 +54,7 @@ _FLAG_NAMES: list[str]       = [t.name for t in _ALL_TESTS]
 NUM_TESTS: int               = len(_ALL_TESTS)
 MAX_POSSIBLE_SCORE: float    = sum(WEIGHTS.values())  # Summe aller Test-Gewichte
 OUTPUT_THRESHOLD: float      = 2.0   # Default — überschreibbar per config
-MAX_OUTPUT_ROWS: int         = 1000  # Default
+MAX_OUTPUT_ROWS: int         = 0     # 0 = unlimited
 
 
 # ── Gegenkonto-Heuristik ─────────────────────────────────────────────────────
@@ -380,9 +380,10 @@ class AnomalyEngine:
         verdaechtig = (
             df[output_mask]
             .sort_values("_score", ascending=False)
-            .head(self.config.max_output_rows)
             .copy()
         )
+        if self.config.max_output_rows > 0:
+            verdaechtig = verdaechtig.head(self.config.max_output_rows)
 
         # Flag-Strings vektorisiert via boolean matrix dot-product
         flag_cols = [f"flag_{n}" for n in _FLAG_NAMES]
@@ -429,7 +430,7 @@ class AnomalyEngine:
         max_score = MAX_POSSIBLE_SCORE
         summary_lines = [
             f"ERGEBNIS: {n_verd} von {total} verdächtig ({pct:.1f}%)",
-            f"Ausgegeben: {n_output} (Top {n_output} nach Score)" if n_output < n_verd else f"Ausgegeben: {n_output}",
+            f"Ausgegeben: {n_output} von {n_verd} (limitiert auf {self.config.max_output_rows})" if 0 < self.config.max_output_rows < n_verd else f"Ausgegeben: {n_output}",
             f"Flags gesamt: {sum(self.flag_counts.values())}, Ø Score: {avg_score}/{max_score}",
             f"Top-Flags: {', '.join(f'{k}:{v}' for k, v in top_flags) or 'keine'}",
         ]

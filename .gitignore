@@ -20,3 +20,4 @@ tests/fixtures/*.xlsx
 tests/fixtures/*.xls
 data/feedback/
 data/uploads/
+.github/copilot-instructions.md

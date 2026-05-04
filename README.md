@@ -2,6 +2,21 @@
 
 Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) entgegennimmt, 14 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
 
+### v7.0 — Consistency, Soll/Haben & Feedback-Loop
+
+- **VELOCITY_ANOMALIE entfernt**: Letztes Vestiges aus models.py und CSV bereinigt. ISOLATION_ANOMALIE nun in Validator registriert (TEST_REQUIREMENTS + TEST_CATEGORIES).
+- **_prepare() Reihenfolge dokumentiert**: 11-Schritt-Docstring mit kritischer Ausführungsreihenfolge.
+- **soll_haben Alias "l"**: Diamant-Spalte "L" wird als soll_haben erkannt. Warnung im Log wenn soll_haben fehlt.
+- **konto_haben Gegenkonto-Erkennung**: `find_counterpart_rows()` füllt konto_haben aus der Gegenseite bei exakt 2-Zeilen-Belegen (konservative Heuristik). Neue Spalte `_konto_haben_inferred`.
+- **Validator-Warnungen**: `ValidationResult.warnings` zeigt soll_haben-Fehlen und konto_haben-Füllrate.
+- **custom_weights**: `AnalysisConfig.custom_weights` erlaubt vom Trainer gelernte Gewichte. `_compute_scores()` nutzt custom_weights wenn gesetzt.
+- **Prüfer-Feedback** (`src/feedback.py`): `FeedbackStore` speichert tp/fp/unsure-Labels in JSONL pro Mandant. Path-Traversal-Schutz. Schwellen: 200 Labels für Statistiken, 500 für Training.
+- **Feedback-UI**: Interaktive Tabelle mit Spalte "bewertung" (tp/fp/unsure). Prüfer-Kürzel + Speicher-Button im Tab "Verdächtige Buchungen".
+- **Feedback-Statistiken** (`src/feedback_stats.py`): Precision/FP-Rate pro Flag. Neuer Tab "📈 Feedback-Stats" in der UI.
+- **ScoreReweighter** (`src/trainer.py`): Berechnet optimierte Flag-Gewichte aus Feedback. Training hard-locked bis 500 Labels. Gewichte geklammert auf [0.1, 5.0].
+- **Docker: feedback-data Volume**: Persistente Feedback-Speicherung unter `/data/feedback`. Neues Docker-Volume `feedback-data`.
+- **186 Tests**: 22 neue Tests für FeedbackStore, FeedbackStats, ScoreReweighter, custom_weights, find_counterpart_rows.
+
 ### v6.0 — Beleg-Aware Refactor
 
 - **Beleg-Ebene**: Buchungszeilen desselben Belegs (DVBelegnummer) werden als zusammengehörig erkannt; Duplikat-Tests ignorieren beleg-interne Zeilen
@@ -163,7 +178,7 @@ Die Spalten werden automatisch erkannt (case-insensitive, Umlaute werden normali
 | `belegnummer`          | `belegnummer`, `beleg`, `belegnr`, `beleg_nr`, `voucher`                    |
 | `kostenstelle`         | `kostenstelle`, `kst`, `cost_center`                                        |
 | `kreditor`             | `kreditor`, `lieferant`, `vendor`, `supplier`, `creditor`, `bezeichnung`    |
-| `soll_haben`           | `soll_haben`, `sollhaben`, `s_h`, `sh`, `soll/haben`                       |
+| `soll_haben`           | `soll_haben`, `sollhaben`, `s_h`, `sh`, `soll/haben`, `l`                  |
 | `dvbelegnummer`        | `dvbelegnummer`, `dv_belegnummer`, `dv_beleg_nr`                            |
 | `dvbuchungsnummer`     | `dvbuchungsnummer`, `dv_buchungsnummer`                                     |
 | `interne_belegnummer`  | `interne_belegnummer`, `internebelegnummer`, `intern_beleg`                 |
@@ -260,7 +275,7 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 
 ---
 
-## Anomalie-Tests (13 Stück)
+## Anomalie-Tests (14 Stück)
 
 | #  | Flag                      | Gewicht | Kritisch | Beschreibung                                                               |
 | -- | ------------------------- | ------- | -------- | -------------------------------------------------------------------------- |
@@ -277,6 +292,7 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 | 11 | `NEUER_KREDITOR_HOCH`     | 2.5     | ✓        | Kreditor mit ≤ 2 Buchungen und hohem Betrag (> μ + 1,5σ)                 |
 | 12 | `MONATS_ENTWICKLUNG`      | 1.5     |          | Monatssumme weicht > 3.0σ vom Konto-Durchschnitt ab (Z-Score)                 |
 | 13 | `FEHLENDE_MONATSBUCHUNG`  | 1.0     |          | Konto hat regulär monatliche Buchungen, fehlt aber in einem Monat         |
+| 14 | `ISOLATION_ANOMALIE`      | 1.5     |          | Isolation-Forest Catch-All (experimentell, default deaktiviert)           |
 
 **Kritische Flags** führen dazu, dass die Buchung **immer** im Output erscheint, unabhängig vom Score-Schwellenwert.
 
@@ -371,22 +387,26 @@ prefilter-api/
 ├── app.py               # Gradio UI + Celery-Dispatcher + lokaler Fallback
 ├── src/
 │   ├── accounting.py    # Kontoklassen + Vorzeichen-Logik (ZENTRAL)
-│   ├── config.py        # AnalysisConfig (Pydantic-Schwellenwerte)
+│   ├── config.py        # AnalysisConfig (Pydantic-Schwellenwerte + custom_weights)
 │   ├── embeddings.py    # TextEmbedder Singleton (sentence-transformers, NEU v6.3)
-│   ├── engine.py        # AnomalyEngine: orchestriert 14 Tests
-│   ├── file_store.py    # Persistenter Upload+Ergebnis-Store (NEU v8.0)
+│   ├── engine.py        # AnomalyEngine: orchestriert 14 Tests + find_counterpart_rows
+│   ├── feedback.py      # FeedbackStore + FeedbackLabel (JSONL per Mandant, NEU v7.0)
+│   ├── feedback_stats.py # Precision/FP-Rate pro Flag aus Labels (NEU v7.0)
+│   ├── file_store.py    # Persistenter Upload+Ergebnis-Store
 │   ├── history.py       # Persistente Lauf-History + Trend-Vergleich (NEU v6.1)
 │   ├── kreditor_clustering.py  # DBSCAN Kreditor-Clustering (NEU v6.3)
 │   ├── main.py          # FastAPI REST API + WebSocket
 │   ├── models.py        # Pydantic-Ergebnis-Modelle
 │   ├── parser.py        # CSV/XLS Einlesen + Spalten-Mapping + Serie-Parsing
+│   ├── trainer.py       # ScoreReweighter — gesperrt bis 500 Labels (NEU v7.0)
 │   ├── webhook.py       # Langdock Webhook Push (3 Retries)
 │   ├── worker.py        # Celery Task (Redis-Backend)
 │   └── tests/           # Test-Module (betrag, duplikate, buchungslogik, …)
 └── tests/
-    ├── conftest.py          # Realdaten-Fixtures (NEU v8.0)
-    ├── test_engine.py       # 108 Unit-Tests
-    ├── test_realdata.py     # Smoke-Tests mit echten Daten (@pytest.mark.real, NEU v8.0)
+    ├── conftest.py          # Realdaten-Fixtures
+    ├── test_engine.py       # 110 Unit-Tests (Engine + Parser)
+    ├── test_feedback.py     # 22 Tests (FeedbackStore, Stats, Trainer, custom_weights, NEU v7.0)
+    ├── test_realdata.py     # Smoke-Tests mit echten Daten (@pytest.mark.real)
     ├── test_performance.py  # 500k-Zeilen Benchmark (@pytest.mark.slow)
     └── test_integration.py  # FastAPI+Redis E2E (@pytest.mark.integration)
 ```
