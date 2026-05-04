@@ -19,6 +19,7 @@ RUN if [ -f requirements.lock ]; then \
 RUN python -c "try:\n from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2'); print('Model cached successfully')\nexcept Exception as e:\n print(f'Model cache skipped: {e}')" || true
 
 COPY src/ src/
+COPY docs/ docs/
 COPY app.py .
 
 EXPOSE 8000
