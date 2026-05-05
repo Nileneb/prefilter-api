@@ -72,7 +72,11 @@ class TextKontoMatch(AnomalyTest):
         )
 
         # Sachkonto-Bereichsfilter: nur konto_soll in [konto_min, konto_max)
-        konto_num = pd.to_numeric(df["konto_soll"], errors="coerce")
+        # Non-Digits strippen (z.B. "40.000" → 40000) — identisch zu accounting.kontoklasse()
+        konto_num = pd.to_numeric(
+            df["konto_soll"].astype(str).str.strip().str.replace(r"\D", "", regex=True),
+            errors="coerce",
+        )
         has_text = has_text & konto_num.between(konto_min, konto_max - 1, inclusive="both")
 
         n_eligible = int(has_text.sum())
