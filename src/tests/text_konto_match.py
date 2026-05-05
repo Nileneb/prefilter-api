@@ -36,7 +36,7 @@ class TextKontoMatch(AnomalyTest):
     """
 
     name = "TEXT_KONTO_MATCH"
-    weight = 1.5
+    weight = 2.0
     critical = False
     required_columns = ["buchungstext", "konto_soll"]
 
