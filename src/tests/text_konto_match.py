@@ -44,9 +44,12 @@ class TextKontoMatch(AnomalyTest):
         threshold = getattr(config, "text_konto_threshold", 0.3)
         min_bookings = getattr(config, "text_konto_min_bookings", 5)
         gt_lookup_path = getattr(config, "text_konto_gt_path", None)
+        konto_min = getattr(config, "text_konto_konto_min", 40000)
+        konto_max = getattr(config, "text_konto_konto_max", 80000)
 
         self.log("Config", threshold=threshold, min_bookings=min_bookings,
-                 has_embeddings=HAS_EMBEDDINGS, gt_path=gt_lookup_path)
+                 has_embeddings=HAS_EMBEDDINGS, gt_path=gt_lookup_path,
+                 konto_range=f"{konto_min}–{konto_max - 1}")
 
         if not HAS_EMBEDDINGS:
             self.log("SKIP: sentence-transformers nicht verfügbar")
@@ -68,12 +71,13 @@ class TextKontoMatch(AnomalyTest):
             & df[bez_col].astype(str).str.strip().ne("")
         )
 
-        # Nur Ertrags- und Aufwandskonten
-        if "_kontoklasse" in df.columns:
-            has_text = has_text & df["_kontoklasse"].isin(["Ertrag", "Aufwand"])
+        # Sachkonto-Bereichsfilter: nur konto_soll in [konto_min, konto_max)
+        konto_num = pd.to_numeric(df["konto_soll"], errors="coerce")
+        has_text = has_text & konto_num.between(konto_min, konto_max - 1, inclusive="both")
 
         n_eligible = int(has_text.sum())
-        self.log("Eligible", n_eligible=n_eligible, total=len(df))
+        self.log("Eligible", n_eligible=n_eligible, total=len(df),
+                 konto_range=f"{konto_min}–{konto_max - 1}")
         if n_eligible == 0:
             return 0
 

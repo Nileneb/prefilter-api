@@ -152,6 +152,14 @@ class AnalysisConfig(BaseModel):
         "docs/gt_lookup.csv",
         description="Pfad zur Ground-Truth-CSV (konto_soll,gt_bezeichnung). None = Diamant-Bezeichnung.",
     )
+    text_konto_konto_min: int = Field(
+        40000, ge=0,
+        description="Untergrenze konto_soll für TEXT_KONTO_MATCH (inklusive). Standard: 40000 (Erträge ab).",
+    )
+    text_konto_konto_max: int = Field(
+        80000, ge=0,
+        description="Obergrenze konto_soll für TEXT_KONTO_MATCH (exklusive). Standard: 80000 (Aufwände bis 79999).",
+    )
 
     # ── Gelernte Gewichte (via Feedback-Training) ─────────────
     custom_weights: dict[str, float] | None = Field(

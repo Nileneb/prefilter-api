@@ -223,6 +223,8 @@ def analyze_file(
     output_threshold: float,
     prefix_ignore: str,
     text_konto_threshold: float,
+    text_konto_konto_min: int,
+    text_konto_konto_max: int,
     *test_toggles,
 ):
     """Generator: yielded (summary, logs, table, csv, charts...) bei jedem Schritt."""
@@ -270,6 +272,8 @@ def analyze_file(
         "output_threshold":    output_threshold,
         "doppelte_beleg_prefix_ignore": prefix_ignore.strip() if prefix_ignore else "",
         "text_konto_threshold": text_konto_threshold,
+        "text_konto_konto_min": int(text_konto_konto_min),
+        "text_konto_konto_max": int(text_konto_konto_max),
     }
 
     # ── Lokaler Fallback-Modus ────────────────────────────────
@@ -768,6 +772,17 @@ with gr.Blocks(
                 label="TEXT_KONTO_MATCH Threshold (Cosine-Similarity)",
                 info="Buchungstext ↔ Kontobezeichnung: unter diesem Wert → Anomalie (Standard: 0.30)",
             )
+        with gr.Row():
+            text_konto_min_input = gr.Number(
+                value=40000, minimum=0, maximum=99999, precision=0,
+                label="Sachkonto Min (inkl.)",
+                info="Untergrenze konto_soll für TEXT_KONTO_MATCH (Standard: 40000)",
+            )
+            text_konto_max_input = gr.Number(
+                value=80000, minimum=0, maximum=99999, precision=0,
+                label="Sachkonto Max (exkl.)",
+                info="Obergrenze konto_soll, exklusiv (Standard: 80000 → prüft bis 79999)",
+            )
 
     # ── Test-Konfiguration (14 Checkboxen) ────────────────────
     test_checkboxes: list[gr.Checkbox] = []
@@ -939,6 +954,8 @@ with gr.Blocks(
             zscore_slider, iqr_slider, near_dup_slider, threshold_slider,
             prefix_ignore_input,
             text_konto_slider,
+            text_konto_min_input,
+            text_konto_max_input,
             *test_checkboxes,
         ],
         outputs=[
