@@ -34,9 +34,10 @@ TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
     "MONATS_ENTWICKLUNG":     {"required": ["betrag", "datum"]},
     "FEHLENDE_MONATSBUCHUNG": {"required": ["datum"],     "optional": ["konto_soll"]},
     "ISOLATION_ANOMALIE":    {"required": ["betrag"],    "optional": ["datum", "konto_soll"]},
+    "TEXT_KONTO_MATCH":      {"required": ["buchungstext", "konto_soll"]},
 }
 
-# ── Alle 13 Tests in UI-Reihenfolge ─────────────────────────────────────────
+# ── Alle 14 Tests in UI-Reihenfolge ─────────────────────────────────────────
 
 ALL_TEST_NAMES: list[str] = list(TEST_REQUIREMENTS.keys())
 
@@ -48,6 +49,7 @@ TEST_CATEGORIES: dict[str, list[str]] = {
     "Kreditor-Tests": ["NEUER_KREDITOR_HOCH"],
     "Zeitreihen-Tests": ["MONATS_ENTWICKLUNG", "FEHLENDE_MONATSBUCHUNG"],
     "Experimentell": ["ISOLATION_ANOMALIE"],
+    "Embedding-Tests": ["TEXT_KONTO_MATCH"],
 }
 
 
