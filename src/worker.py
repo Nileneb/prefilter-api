@@ -401,20 +401,9 @@ def _run_sequential(r, job_id: str, df, config_dict: dict, start_time: float, en
     result = engine.run(enabled_tests=enabled_tests)
 
     elapsed = round(time.time() - start_time, 1)
-    stats = result["statistics"]
 
-    # Zusammenfassung in Redis-Log
-    _log_redis(r, job_id, "════════════════════════════════════════════")
-    _log_redis(r, job_id, f"📋 FERTIG: {stats['total_suspicious']:,} von {stats['total_input']:,} verdächtig ({stats['filter_ratio']})".replace(",", "."))
-    _log_redis(r, job_id, f"   Ausgegeben: {stats['total_output']:,} (Top nach Score)".replace(",", "."))
-    _log_redis(r, job_id, f"   Laufzeit: {elapsed}s")
-    top_flags = sorted(
-        ((k, v) for k, v in stats["flag_counts"].items() if v > 0),
-        key=lambda x: -x[1],
-    )[:5]
-    if top_flags:
-        _log_redis(r, job_id, f"   Top: {', '.join(f'{k} ({v:,})'.replace(',', '.') for k, v in top_flags)}")
-    _log_redis(r, job_id, "════════════════════════════════════════════")
+    # Laufzeit ins Redis-Log (Summary-Stats kommen bereits via instrumented_log aus _export())
+    _log_redis(r, job_id, f"⏱️ Laufzeit: {elapsed}s")
 
     # Flags-Parquet für UI-Charts speichern (nur flag_* + _score)
     flags_dir = os.environ.get("UPLOAD_DIR", "/tmp/prefilter")
