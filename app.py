@@ -63,13 +63,23 @@ except Exception:
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-_current_job_id: str | None = None
-_last_engine_df: pd.DataFrame | None = None   # für on-demand Charts
-_last_result: dict | None = None
-_last_file_path: str | None = None            # für Chart-Rebuild im Worker-Modus
-_last_flags_parquet: str | None = None        # Flags-Parquet vom Worker für Chart-Rebuild
-_last_mandant_id: str = "unknown"             # für Feedback-Speicherung
-_last_analysis_ts: str = ""                   # Zeitpunkt der letzten Analyse
+# WHY(#10, #17): Pro-Session-State statt Modul-Globals. Bei parallelen Gradio-
+# Sessions würden geteilte Globals Buchungsdaten zwischen Nutzern vermischen.
+# Wird als gr.State(dict) je Session gehalten und durch die Handler gereicht.
+def _new_session() -> dict:
+    return {
+        "job_id":        None,
+        "engine_df":     None,   # für on-demand Charts (lazy gecached)
+        "result":        None,
+        "file_path":     None,   # für Chart-Rebuild im Worker-Modus
+        "flags_parquet": None,   # Flags-Parquet vom Worker für Chart-Rebuild
+        "mandant_id":    "unknown",
+        "analysis_ts":   "",
+        "dynamic_fig":   None,   # letzter dynamischer Chart für HTML-Export
+    }
+
+
+# FeedbackStore schreibt JSONL pro Mandant (append) → prozessweit teilbar.
 _feedback_store = FeedbackStore()
 
 
@@ -215,6 +225,7 @@ def validate_file(file):
 # ══════════════════════════════════════════════════════════════
 
 def analyze_file(
+    session: dict,
     file,
     webhook_url: str,
     zscore_threshold: float,
@@ -227,23 +238,22 @@ def analyze_file(
     text_konto_konto_max: int,
     *test_toggles,
 ):
-    """Generator: yielded (summary, logs, table, csv, charts...) bei jedem Schritt."""
-    global _current_job_id
-    global _last_engine_df, _last_result, _last_file_path, _last_flags_parquet
-    global _last_mandant_id, _last_analysis_ts
-    _current_job_id = None
-    _last_engine_df = None
-    _last_result = None
-    _last_file_path = None
-    _last_flags_parquet = None
-    _last_analysis_ts = datetime.now().isoformat()
+    """Generator: yielded (summary, logs, table, csv, session) bei jedem Schritt."""
+    session.update(_new_session())
+    session["analysis_ts"] = datetime.now().isoformat()
     live_log_lines: list[str] = []
 
     def log(msg: str) -> None:
         live_log_lines.append(f"[{_ts()}] {msg}")
 
     def current_state(summary="", table=None, csv_path=None):
-        return (summary, "\n".join(live_log_lines), table, gr.update(value=csv_path, visible=csv_path is not None))
+        return (
+            summary,
+            "\n".join(live_log_lines),
+            table,
+            gr.update(value=csv_path, visible=csv_path is not None),
+            session,
+        )
 
     if file is None:
         yield current_state("Bitte eine Datei hochladen.")
@@ -328,7 +338,7 @@ def analyze_file(
         # Upload + Ergebnis persistent speichern
         try:
             mandant_id = _detect_mandant(df, filepath)
-            _last_mandant_id = mandant_id
+            session["mandant_id"] = mandant_id
             store_upload(mandant_id, filepath, os.path.basename(filepath))
             store_result(mandant_id, os.path.basename(filepath), result, display_df)
             log(f"📁 Upload + Ergebnis gespeichert unter data/uploads/{mandant_id}/")
@@ -336,8 +346,8 @@ def analyze_file(
             log(f"⚠️ File-Store fehlgeschlagen: {e}")
 
         # Engine-Daten für on-demand Charts speichern
-        _last_engine_df = engine.df
-        _last_result = result
+        session["engine_df"] = engine.df
+        session["result"] = result
         log("📊 Charts können jetzt einzeln im Tab 'Visualisierungen' generiert werden.")
 
         yield current_state(summary, display_df, csv_path)
@@ -363,7 +373,7 @@ def analyze_file(
         task_args.append(sorted(enabled_tests))
 
     _celery.send_task("prefilter.analyze", args=task_args)
-    _current_job_id = job_id
+    session["job_id"] = job_id
     logger.info("Job erstellt: %s -> Worker-Pool", job_id)
     log(f"📤 Job {job_id[:8]}... eingereicht")
     yield current_state("Warte auf Worker...")
@@ -400,7 +410,7 @@ def analyze_file(
 
         time.sleep(0.5)
 
-    _current_job_id = None
+    session["job_id"] = None
 
     if status == "cancelled":
         log("⛔ Analyse abgebrochen")
@@ -426,36 +436,38 @@ def analyze_file(
     summary, display_df = _format_result(result, webhook_url)
     csv_path = _save_csv(display_df)
     # Worker-Modus: Result + Dateipfad speichern für Chart-Rebuild
-    _last_result = result
-    _last_file_path = dest
-    _last_flags_parquet = data.get("flags_parquet")
-    _last_engine_df = None  # wird on-demand beim ersten Chart-Klick gebaut
+    session["result"] = result
+    session["file_path"] = dest
+    session["flags_parquet"] = data.get("flags_parquet")
+    session["engine_df"] = None  # wird on-demand beim ersten Chart-Klick gebaut
     # Mandant für Feedback ableiten
     try:
         from src.parser import read_upload, map_columns
         _tmp_df = read_upload(dest)
         _tmp_df = map_columns(_tmp_df)
-        _last_mandant_id = _detect_mandant(_tmp_df, dest)
+        session["mandant_id"] = _detect_mandant(_tmp_df, dest)
     except Exception:
-        _last_mandant_id = _detect_mandant(pd.DataFrame(), dest)
+        session["mandant_id"] = _detect_mandant(pd.DataFrame(), dest)
     log("📊 Charts können jetzt im Tab 'Visualisierungen' generiert werden.")
     yield current_state(summary, display_df, csv_path)
 
 
-def cancel_analysis():
+def cancel_analysis(session: dict):
     if _LOCAL_MODE:
         return "Lokaler Modus: Abbruch nicht unterstützt (Analyse läuft synchron)."
-    if _current_job_id:
-        _r.set(f"job:{_current_job_id}:cancelled", "1", ex=JOB_TTL)
-        _r.hset(f"job:{_current_job_id}", "status", "cancelling")
-    return "Abbruch-Signal gesendet -- wird nach dem laufenden Test wirksam."
+    job_id = session.get("job_id")
+    if job_id:
+        _r.set(f"job:{job_id}:cancelled", "1", ex=JOB_TTL)
+        _r.hset(f"job:{job_id}", "status", "cancelling")
+        return "Abbruch-Signal gesendet -- wird nach dem laufenden Test wirksam."
+    return "Kein laufender Job in dieser Session."
 
 
 # ══════════════════════════════════════════════════════════════
 # FEEDBACK HANDLER
 # ══════════════════════════════════════════════════════════════
 
-def save_feedback(table_data: pd.DataFrame, pruefer: str) -> str:
+def save_feedback(session: dict, table_data: pd.DataFrame, pruefer: str) -> str:
     """Iteriert über die Ergebnis-Tabelle und speichert alle Zeilen mit Bewertung."""
     if table_data is None or table_data.empty:
         return "⚠️ Keine Daten vorhanden."
@@ -473,8 +485,8 @@ def save_feedback(table_data: pd.DataFrame, pruefer: str) -> str:
         if not raw_label or raw_label not in valid_labels:
             continue
         label = FeedbackLabel(
-            mandant_id=_last_mandant_id,
-            analysis_timestamp=_last_analysis_ts,
+            mandant_id=session.get("mandant_id", "unknown"),
+            analysis_timestamp=session.get("analysis_ts", ""),
             row_index=int(idx),
             belegnummer=str(row.get("belegnummer", "")),
             anomaly_score=float(row.get("anomaly_score", 0)),
@@ -485,15 +497,16 @@ def save_feedback(table_data: pd.DataFrame, pruefer: str) -> str:
         _feedback_store.save(label)
         saved += 1
 
-    total = _feedback_store.count(_last_mandant_id)
-    return f"✅ {saved} Labels gespeichert. Gesamt für Mandant {_last_mandant_id}: {total}"
+    mandant_id = session.get("mandant_id", "unknown")
+    total = _feedback_store.count(mandant_id)
+    return f"✅ {saved} Labels gespeichert. Gesamt für Mandant {mandant_id}: {total}"
 
 
 # ══════════════════════════════════════════════════════════════
 # ON-DEMAND CHART FUNKTIONEN
 # ══════════════════════════════════════════════════════════════
 
-def _rebuild_df_for_charts(filepath: str, result: dict) -> pd.DataFrame | None:
+def _rebuild_df_for_charts(filepath: str, result: dict, flags_parquet: str | None) -> pd.DataFrame | None:
     """Baut den Engine-DataFrame aus der Originaldatei für Charts nach.
 
     Liest die Datei, bereitet Spalten vor (_prepare), setzt dann Flags+Scores
@@ -507,8 +520,8 @@ def _rebuild_df_for_charts(filepath: str, result: dict) -> pd.DataFrame | None:
         engine = AnomalyEngine(df)  # _prepare() wird in __init__ aufgerufen
 
         # Flags aus Parquet laden (vom Worker gespeichert)
-        if _last_flags_parquet and os.path.exists(_last_flags_parquet):
-            flags_df = pd.read_parquet(_last_flags_parquet)
+        if flags_parquet and os.path.exists(flags_parquet):
+            flags_df = pd.read_parquet(flags_parquet)
             for col in flags_df.columns:
                 engine.df[col] = flags_df[col]
         else:
@@ -524,92 +537,93 @@ def _rebuild_df_for_charts(filepath: str, result: dict) -> pd.DataFrame | None:
         logger.error("Chart-Rebuild fehlgeschlagen: %s", exc, exc_info=True)
         return None
 
-def _get_chart_builder() -> ChartBuilder | None:
+def _get_chart_builder(session: dict) -> ChartBuilder | None:
     """Gibt einen ChartBuilder zurück wenn Analysedaten vorhanden, sonst None."""
-    global _last_engine_df
-    if _last_result is None:
+    if session.get("result") is None:
         return None
     # Lazy-Rebuild: Im Worker-Modus wird der DataFrame beim ersten Chart-Klick gebaut
-    if _last_engine_df is None and _last_file_path is not None:
-        _last_engine_df = _rebuild_df_for_charts(_last_file_path, _last_result)
-    if _last_engine_df is None:
+    if session.get("engine_df") is None and session.get("file_path") is not None:
+        session["engine_df"] = _rebuild_df_for_charts(
+            session["file_path"], session["result"], session.get("flags_parquet")
+        )
+    if session.get("engine_df") is None:
         return None
-    return ChartBuilder(_last_engine_df, _last_result)
+    return ChartBuilder(session["engine_df"], session["result"])
 
 
-def generate_score_distribution():
-    b = _get_chart_builder()
+def generate_score_distribution(session: dict):
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.score_distribution()
 
 
-def generate_flag_frequency():
-    b = _get_chart_builder()
+def generate_flag_frequency(session: dict):
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.flag_frequency()
 
 
-def generate_monthly_pnl():
-    b = _get_chart_builder()
+def generate_monthly_pnl(session: dict):
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.monthly_pnl()
 
 
-def generate_top_accounts():
-    b = _get_chart_builder()
+def generate_top_accounts(session: dict):
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.top_accounts()
 
 
-def generate_ertrag_aufwand():
-    b = _get_chart_builder()
+def generate_ertrag_aufwand(session: dict):
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.ertrag_aufwand_monthly()
 
 
-def generate_heatmap():
-    b = _get_chart_builder()
+def generate_heatmap(session: dict):
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.volume_heatmap()
 
 
-def generate_betrag_vs_score():
-    b = _get_chart_builder()
+def generate_betrag_vs_score(session: dict):
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.betrag_vs_score()
 
 
-def generate_treemap():
-    b = _get_chart_builder()
+def generate_treemap(session: dict):
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.kreditor_treemap()
 
 
-def generate_zeitreihe():
-    b = _get_chart_builder()
+def generate_zeitreihe(session: dict):
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.zeitreihe_konto()
 
 
-def generate_sh_balance():
-    b = _get_chart_builder()
+def generate_sh_balance(session: dict):
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.soll_haben_balance()
 
 
-def generate_all_charts():
+def generate_all_charts(session: dict):
     """Alle 10 Charts auf einmal generieren."""
-    b = _get_chart_builder()
+    b = _get_chart_builder(session)
     if b is None:
         return [gr.update(value=None)] * 10
     charts = b.all_charts()
@@ -625,20 +639,19 @@ def generate_all_charts():
 # DYNAMISCHER CHART-BUILDER (Event-Handler)
 # ══════════════════════════════════════════════════════════════
 
-_last_dynamic_fig: go.Figure | None = None
-
-
-def _populate_dynamic_dropdowns():
+def _populate_dynamic_dropdowns(session: dict):
     """Befüllt Dropdowns mit Spalten aus dem letzten Engine-DataFrame."""
-    global _last_engine_df
     # Lazy-Rebuild triggern (Worker-Modus)
-    if _last_engine_df is None and _last_file_path is not None and _last_result is not None:
-        _last_engine_df = _rebuild_df_for_charts(_last_file_path, _last_result)
-    if _last_engine_df is None:
+    if session.get("engine_df") is None and session.get("file_path") is not None and session.get("result") is not None:
+        session["engine_df"] = _rebuild_df_for_charts(
+            session["file_path"], session["result"], session.get("flags_parquet")
+        )
+    engine_df = session.get("engine_df")
+    if engine_df is None:
         empty = gr.update(choices=[], value=None)
         return [empty] * 5
 
-    cols = classify_columns(_last_engine_df)
+    cols = classify_columns(engine_df)
     num_choices = cols["numeric"]
     all_choices = cols["all"]
     cat_choices = ["(keine)"] + cols["categorical"]
@@ -658,40 +671,43 @@ def _toggle_z_axis(chart_type):
     return gr.update(visible="3D" in chart_type)
 
 
-def _build_dynamic_chart(chart_type, x, y, z, color, size):
-    """Baut den dynamischen Chart."""
-    global _last_dynamic_fig, _last_engine_df
+def _build_dynamic_chart(session: dict, chart_type, x, y, z, color, size):
+    """Baut den dynamischen Chart. Gibt die Session (mit dynamic_fig) mit zurück."""
     # Lazy-Rebuild triggern (Worker-Modus)
-    if _last_engine_df is None and _last_file_path is not None and _last_result is not None:
-        _last_engine_df = _rebuild_df_for_charts(_last_file_path, _last_result)
-    if _last_engine_df is None:
-        _last_dynamic_fig = None
-        return _empty_figure("Erst eine Analyse durchführen"), ""
-    builder = DynamicChartBuilder(_last_engine_df)
+    if session.get("engine_df") is None and session.get("file_path") is not None and session.get("result") is not None:
+        session["engine_df"] = _rebuild_df_for_charts(
+            session["file_path"], session["result"], session.get("flags_parquet")
+        )
+    engine_df = session.get("engine_df")
+    if engine_df is None:
+        session["dynamic_fig"] = None
+        return _empty_figure("Erst eine Analyse durchführen"), "", session
+    builder = DynamicChartBuilder(engine_df)
     warnings = []
     for col in [x, y, z]:
         if col and col != "(keine)":
-            w = check_column_quality(_last_engine_df, col)
+            w = check_column_quality(engine_df, col)
             if w:
                 warnings.append(w)
     fig = builder.build(chart_type, x, y, z, color, size)
-    _last_dynamic_fig = fig
-    return fig, "\n".join(warnings)
+    session["dynamic_fig"] = fig
+    return fig, "\n".join(warnings), session
 
 
-def _export_chart_html():
+def _export_chart_html(session: dict):
     """Exportiert den letzten dynamischen Chart als HTML."""
     import tempfile
-    if _last_dynamic_fig is None:
+    fig = session.get("dynamic_fig")
+    if fig is None:
         return gr.update(value=None, visible=False)
     path = os.path.join(tempfile.gettempdir(), f"chart_{int(time.time())}.html")
-    _last_dynamic_fig.write_html(path, include_plotlyjs="cdn")
+    fig.write_html(path, include_plotlyjs="cdn")
     return gr.update(value=path, visible=True)
 
 
-def _generate_3d_landscape():
+def _generate_3d_landscape(session: dict):
     """Generiert den vordefinierten 3D-Scatter."""
-    b = _get_chart_builder()
+    b = _get_chart_builder(session)
     if b is None:
         return gr.update(value=None)
     return b.anomaly_landscape_3d()
@@ -705,9 +721,12 @@ with gr.Blocks(
     title="Buchungs-Anomalie Pre-Filter",
 ) as demo:
 
+    # WHY(#10, #17): Pro-Session-State — isoliert Daten zwischen parallelen Nutzern.
+    session_state = gr.State(_new_session())
+
     gr.Markdown("# Buchungs-Anomalie Pre-Filter", elem_classes="main-title")
     gr.Markdown(
-        "Buchungsdaten hochladen (CSV / XLS / XLSX) → 13 statistische Tests → "
+        "Buchungsdaten hochladen (CSV / XLS / XLSX) → 15 statistische Tests → "
         "verdächtige Buchungen an Langdock Agent senden",
         elem_classes="subtitle",
     )
@@ -950,6 +969,7 @@ with gr.Blocks(
     analyze_btn.click(
         fn=analyze_file,
         inputs=[
+            session_state,
             file_input, webhook_input,
             zscore_slider, iqr_slider, near_dup_slider, threshold_slider,
             prefix_ignore_input,
@@ -959,20 +979,20 @@ with gr.Blocks(
             *test_checkboxes,
         ],
         outputs=[
-            summary_output, logs_output, table_output, export_file,
+            summary_output, logs_output, table_output, export_file, session_state,
         ],
     )
 
     cancel_btn.click(
         fn=cancel_analysis,
-        inputs=[],
+        inputs=[session_state],
         outputs=[summary_output],
     )
 
     # ── Event: Feedback speichern ─────────────────────────────
     feedback_save_btn.click(
         fn=save_feedback,
-        inputs=[table_output, feedback_pruefer],
+        inputs=[session_state, table_output, feedback_pruefer],
         outputs=[feedback_status],
     )
 
@@ -1006,26 +1026,26 @@ with gr.Blocks(
         chart_ertrag_aufw, chart_heatmap, chart_scatter, chart_treemap,
         chart_zeitreihe, chart_sh_balance,
     ]
-    all_charts_btn.click(fn=generate_all_charts, inputs=[], outputs=all_chart_outputs)
+    all_charts_btn.click(fn=generate_all_charts, inputs=[session_state], outputs=all_chart_outputs)
 
-    btn_score_dist.click(fn=generate_score_distribution, inputs=[], outputs=[chart_score_dist])
-    btn_flag_freq.click(fn=generate_flag_frequency, inputs=[], outputs=[chart_flag_freq])
-    btn_monthly_pnl.click(fn=generate_monthly_pnl, inputs=[], outputs=[chart_monthly_pnl])
-    btn_top_acc.click(fn=generate_top_accounts, inputs=[], outputs=[chart_top_acc])
-    btn_ertrag_aufw.click(fn=generate_ertrag_aufwand, inputs=[], outputs=[chart_ertrag_aufw])
-    btn_heatmap.click(fn=generate_heatmap, inputs=[], outputs=[chart_heatmap])
-    btn_scatter.click(fn=generate_betrag_vs_score, inputs=[], outputs=[chart_scatter])
-    btn_treemap.click(fn=generate_treemap, inputs=[], outputs=[chart_treemap])
-    btn_zeitreihe.click(fn=generate_zeitreihe, inputs=[], outputs=[chart_zeitreihe])
-    btn_sh_balance.click(fn=generate_sh_balance, inputs=[], outputs=[chart_sh_balance])
+    btn_score_dist.click(fn=generate_score_distribution, inputs=[session_state], outputs=[chart_score_dist])
+    btn_flag_freq.click(fn=generate_flag_frequency, inputs=[session_state], outputs=[chart_flag_freq])
+    btn_monthly_pnl.click(fn=generate_monthly_pnl, inputs=[session_state], outputs=[chart_monthly_pnl])
+    btn_top_acc.click(fn=generate_top_accounts, inputs=[session_state], outputs=[chart_top_acc])
+    btn_ertrag_aufw.click(fn=generate_ertrag_aufwand, inputs=[session_state], outputs=[chart_ertrag_aufw])
+    btn_heatmap.click(fn=generate_heatmap, inputs=[session_state], outputs=[chart_heatmap])
+    btn_scatter.click(fn=generate_betrag_vs_score, inputs=[session_state], outputs=[chart_scatter])
+    btn_treemap.click(fn=generate_treemap, inputs=[session_state], outputs=[chart_treemap])
+    btn_zeitreihe.click(fn=generate_zeitreihe, inputs=[session_state], outputs=[chart_zeitreihe])
+    btn_sh_balance.click(fn=generate_sh_balance, inputs=[session_state], outputs=[chart_sh_balance])
 
     # ── Events: 3D-Preset ────────────────────────────────────
-    btn_3d_landscape.click(fn=_generate_3d_landscape, inputs=[], outputs=[chart_3d_landscape])
+    btn_3d_landscape.click(fn=_generate_3d_landscape, inputs=[session_state], outputs=[chart_3d_landscape])
 
     # ── Events: Dynamischer Chart-Builder ─────────────────────
     dyn_load_btn.click(
         fn=_populate_dynamic_dropdowns,
-        inputs=[],
+        inputs=[session_state],
         outputs=[dyn_x, dyn_y, dyn_z, dyn_color, dyn_size],
     )
     dyn_chart_type.change(
@@ -1035,22 +1055,23 @@ with gr.Blocks(
     )
     dyn_build_btn.click(
         fn=_build_dynamic_chart,
-        inputs=[dyn_chart_type, dyn_x, dyn_y, dyn_z, dyn_color, dyn_size],
-        outputs=[dyn_chart_output, dyn_quality_warning],
+        inputs=[session_state, dyn_chart_type, dyn_x, dyn_y, dyn_z, dyn_color, dyn_size],
+        outputs=[dyn_chart_output, dyn_quality_warning, session_state],
     )
     dyn_export_btn.click(
         fn=_export_chart_html,
-        inputs=[],
+        inputs=[session_state],
         outputs=[dyn_export_file],
     )
 
     gr.Markdown(
         "---\n"
-        "**14 Tests:** Z-Score | IQR | Konto-Betrag | Near-Duplicate | "
+        "**15 Tests:** Z-Score | IQR | Konto-Betrag | Near-Duplicate | "
         "Doppelte Belegnummer | Beleg-Kreditor-Duplikat | Storno | "
         "Leerer Buchungstext | Rechnungsdatum-Periode | Buchungstext-Periode | "
         "Neuer Kreditor | "
-        "Monats-Entwicklung | Fehlende Monatsbuchung | Isolation-Anomalie"
+        "Monats-Entwicklung | Fehlende Monatsbuchung | Isolation-Anomalie | "
+        "Text-Konto-Match"
     )
 
 
