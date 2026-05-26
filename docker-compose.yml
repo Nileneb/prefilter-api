@@ -2,6 +2,11 @@ services:
   ui:
     build: .
     command: python app.py
+    # WHY(#6): Nur die Gradio-UI (7864) wird exponiert. Die FastAPI-REST-API
+    # (Dockerfile-Default uvicorn:8000) hat KEINE Authentifizierung und wird
+    # bewusst NICHT nach außen gemappt. Wer die REST-API braucht, muss sie hinter
+    # einen Reverse-Proxy mit Auth setzen oder ein eigenes, intern gebundenes
+    # Service ergänzen (siehe README → "REST-API (intern)").
     ports:
       - "7864:7864"
     restart: unless-stopped

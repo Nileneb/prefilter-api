@@ -138,9 +138,32 @@ ROOT_PATH=/prefilter
 
 # Persistentes History-Verzeichnis (NEU v6.1)
 HISTORY_DIR=/data/history
+
+# Logging (strukturiert via structlog)
+LOG_LEVEL=INFO          # DEBUG | INFO | WARNING | ERROR
+LOG_FORMAT=json         # json (Production) | console (Entwicklung)
+
+# Größenlimits (DoS-Schutz)
+MAX_UPLOAD_SIZE_MB=100  # Max. Upload-Größe (Gradio + REST-API → HTTP 413)
+WEBHOOK_MAX_ROWS=100    # Max. Buchungen im Webhook-Payload
+WEBHOOK_MAX_LOG_LINES=50
+
+# Redis (Result-Backend wird sonst aus REDIS_URL abgeleitet, DB 1)
+REDIS_URL=redis://redis:6379/0
+# REDIS_BACKEND_URL=redis://redis:6379/1
 ```
 
 Die Webhook-URL kann auch direkt in der Web-UI überschrieben werden.
+
+### REST-API (intern, ohne Auth)
+
+Das Dockerfile startet standardmäßig die FastAPI-REST-API auf Port **8000**
+(`uvicorn src.main:app`). Diese API hat **keine Authentifizierung**. Im
+`docker-compose.yml` läuft daher nur der **Gradio-UI-Service** (Port 7864) — Port
+8000 wird **bewusst nicht** nach außen gemappt. Wer die REST-API
+(`POST /api/jobs`, WebSocket-Logs) extern nutzen will, muss sie hinter einen
+Reverse-Proxy mit Authentifizierung stellen. Health-Check: `GET /health`
+(liefert Version + Redis-Status, HTTP 200/503).
 
 ---
 
