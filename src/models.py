@@ -7,7 +7,9 @@ Wird von src/main.py (FastAPI) genutzt.
 from __future__ import annotations
 
 from typing import Any
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
+
+from src.validator import ALL_TEST_NAMES
 
 
 # ── Job lifecycle ─────────────────────────────────────────────────────────────
@@ -30,20 +32,12 @@ class JobStatusResponse(BaseModel):
 # ── Analysis result (matches src/engine.py run() return dict) ─────────────────
 # Jeder Test setzt flag_<NAME> in-place. Score = gewichtete Summe der Flags.
 
-class FlagCounts(BaseModel):
-    BETRAG_ZSCORE: int = 0
-    BETRAG_IQR: int = 0
-    NEAR_DUPLICATE: int = 0
-    DOPPELTE_BELEGNUMMER: int = 0
-    BELEG_KREDITOR_DUPLIKAT: int = 0
-    STORNO: int = 0
-    NEUER_KREDITOR_HOCH: int = 0
-    KONTO_BETRAG_ANOMALIE: int = 0
-    LEERER_BUCHUNGSTEXT: int = 0
-    RECHNUNGSDATUM_PERIODE: int = 0
-    BUCHUNGSTEXT_PERIODE: int = 0
-    MONATS_ENTWICKLUNG: int = 0
-    FEHLENDE_MONATSBUCHUNG: int = 0
+# WHY(#7): FlagCounts driftete (es fehlten ISOLATION_ANOMALIE/TEXT_KONTO_MATCH).
+# Jetzt dynamisch aus der kanonischen Testliste erzeugt → kann nicht mehr abweichen.
+FlagCounts: type[BaseModel] = create_model(
+    "FlagCounts",
+    **{name: (int, 0) for name in ALL_TEST_NAMES},
+)
 
 
 class Statistics(BaseModel):
@@ -63,7 +57,6 @@ class VerdaechtigeBuchung(BaseModel):
     belegnummer: str = ""
     kostenstelle: str = ""
     kreditor: str = ""
-    erfasser: str = ""
     anomaly_score: float = 0.0
     anomaly_flags: str = ""
 

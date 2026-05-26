@@ -37,7 +37,7 @@ TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
     "TEXT_KONTO_MATCH":      {"required": ["buchungstext", "konto_soll"]},
 }
 
-# ── Alle 14 Tests in UI-Reihenfolge ─────────────────────────────────────────
+# ── Alle Tests in UI-Reihenfolge ─────────────────────────────────────────────
 
 ALL_TEST_NAMES: list[str] = list(TEST_REQUIREMENTS.keys())
 

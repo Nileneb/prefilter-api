@@ -1,5 +1,5 @@
 """
-Buchungs-Anomalie Pre-Filter — FastAPI Backend v4.0
+Buchungs-Anomalie Pre-Filter — FastAPI Backend
 
 Endpoints:
     POST   /api/jobs                  — Job anlegen, Datei hochladen
@@ -22,6 +22,7 @@ from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconn
 from fastapi.responses import JSONResponse
 import redis.asyncio as aioredis
 
+from src import __version__
 from src.models import JobResponse, JobStatusResponse
 from src.logging_config import setup_logging, get_logger
 
@@ -33,8 +34,8 @@ JOB_TTL   = int(os.environ.get("JOB_TTL_SECONDS", "3600"))   # 1 Stunde
 
 app = FastAPI(
     title="Buchungs-Anomalie Pre-Filter API",
-    version="4.0.0",
-    description="14 statistische Anomalie-Tests für Buchungsdaten",
+    version=__version__,
+    description="15 statistische Anomalie-Tests für Buchungsdaten",
 )
 
 
@@ -50,7 +51,7 @@ def _redis() -> aioredis.Redis:
 @app.get("/health")
 async def health():
     """Liveness check."""
-    return {"status": "ok", "version": "4.0.0"}
+    return {"status": "ok", "version": __version__}
 
 
 @app.post("/api/jobs", response_model=JobResponse, status_code=202)

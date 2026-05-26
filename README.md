@@ -1,6 +1,8 @@
-# Buchungs-Anomalie Pre-Filter v7.0
+# Buchungs-Anomalie Pre-Filter v7.0.0
 
-Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) entgegennimmt, 14 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
+Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Export mit Pipe-Delimiter) entgegennimmt, 15 statistische Anomalie-Tests durchführt und verdächtige Buchungen anzeigt + optional per Webhook an einen Langdock Agent sendet.
+
+> **Version:** Single source of truth ist `src/__init__.py` (`__version__`); `pyproject.toml` spiegelt sie, `tests/test_version.py` erzwingt Gleichheit.
 
 ### v7.0 — Consistency, Soll/Haben & Feedback-Loop
 

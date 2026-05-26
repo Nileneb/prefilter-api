@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "prefilter-api"
-version = "4.1.0"
+version = "7.0.0"
 requires-python = ">=3.12"
 dependencies = [
     "gradio>=5.12.0",
