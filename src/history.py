@@ -40,12 +40,12 @@ def _monthly_stats(df: pd.DataFrame) -> dict[str, dict[str, float]]:
         .sum()
         .reset_index(name="summe")
     )
-    result: dict[str, dict[str, float]] = {}
-    for _, row in monthly.iterrows():
-        konto = str(row["konto_soll"])
-        ym = str(row["_ym"])
-        result.setdefault(konto, {})[ym] = round(float(row["summe"]), 2)
-    return result
+    # WHY(#5): kein iterrows — pro Konto-Gruppe via zip (np.float64 → float für JSON)
+    monthly["summe"] = monthly["summe"].round(2)
+    return {
+        str(konto): {str(ym): float(s) for ym, s in zip(grp["_ym"], grp["summe"])}
+        for konto, grp in monthly.groupby("konto_soll", observed=True)
+    }
 
 
 def save_run(

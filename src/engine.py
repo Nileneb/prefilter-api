@@ -84,37 +84,47 @@ def find_counterpart_rows(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     if len(pair_belege) == 0:
         return result, inferred
 
+    # WHY(#9): vollständig vektorisiert — kein Python-Loop über 250k+ 2er-Belege.
+    # 2er-Belege per cumcount in Position 0/1 splitten und self-join über _beleg_id.
     pair_mask = df["_beleg_id"].isin(pair_belege)
-    pairs = df.loc[pair_mask].copy()
+    pairs = df.loc[pair_mask, ["_beleg_id", "_abs", "konto_soll"]].copy()
+    pairs["_orig_idx"] = pairs.index
+    pairs["_pos"] = pairs.groupby("_beleg_id", observed=True).cumcount()
 
-    # Für jedes 2er-Paar: prüfe ob |betrag_a| == |betrag_b| und Vorzeichen entgegengesetzt
-    for beleg_id, grp in pairs.groupby("_beleg_id"):
-        if len(grp) != 2:
-            continue
-        idx0, idx1 = grp.index[0], grp.index[1]
-        abs0, abs1 = grp.at[idx0, "_abs"], grp.at[idx1, "_abs"]
-        bet0, bet1 = grp.at[idx0, "_betrag"], grp.at[idx1, "_betrag"]
+    r0 = pairs[pairs["_pos"] == 0].set_index("_beleg_id")
+    r1 = pairs[pairs["_pos"] == 1].set_index("_beleg_id")
+    m = r0.join(r1, lsuffix="_0", rsuffix="_1")
 
-        # Beträge müssen gleich sein (abs) und Vorzeichen entgegengesetzt ODER gleich
-        if abs0 == 0 or abs1 == 0:
-            continue
-        if abs(abs0 - abs1) > 0.01:
-            continue
+    abs0 = m["_abs_0"]
+    abs1 = m["_abs_1"]
+    valid = (abs0 != 0) & (abs1 != 0) & ((abs0 - abs1).abs() <= 0.01)
+    m = m[valid]
+    if m.empty:
+        return result, inferred
 
-        konto0 = str(grp.at[idx0, "konto_soll"]).strip()
-        konto1 = str(grp.at[idx1, "konto_soll"]).strip()
+    empty_vals = {"", "nan", "null", "none"}
+    idx0 = m["_orig_idx_0"].to_numpy()
+    idx1 = m["_orig_idx_1"].to_numpy()
+    konto0 = pd.Series(m["konto_soll_0"].astype(str).str.strip().to_numpy())
+    konto1 = pd.Series(m["konto_soll_1"].astype(str).str.strip().to_numpy())
+    curr0 = pd.Series(result.loc[idx0].to_numpy())
+    curr1 = pd.Series(result.loc[idx1].to_numpy())
 
-        # Nur füllen wenn konto_haben aktuell leer ist
-        curr0 = result.at[idx0]
-        curr1 = result.at[idx1]
-        empty_vals = {"", "nan", "null", "none"}
+    def _empty(s: pd.Series) -> pd.Series:
+        return s.str.lower().isin(empty_vals)
 
-        if curr0.lower() in empty_vals and konto1 and konto1.lower() not in empty_vals:
-            result.at[idx0] = konto1
-            inferred.at[idx0] = True
-        if curr1.lower() in empty_vals and konto0 and konto0.lower() not in empty_vals:
-            result.at[idx1] = konto0
-            inferred.at[idx1] = True
+    def _nonempty(k: pd.Series) -> pd.Series:
+        return (k != "") & (~k.str.lower().isin(empty_vals))
+
+    fill0 = (_empty(curr0) & _nonempty(konto1)).to_numpy()
+    fill1 = (_empty(curr1) & _nonempty(konto0)).to_numpy()
+
+    if fill0.any():
+        result.loc[idx0[fill0]] = konto1[fill0].to_numpy()
+        inferred.loc[idx0[fill0]] = True
+    if fill1.any():
+        result.loc[idx1[fill1]] = konto0[fill1].to_numpy()
+        inferred.loc[idx1[fill1]] = True
 
     return result, inferred
 
