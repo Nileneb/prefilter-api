@@ -16,7 +16,7 @@ from datetime import datetime
 import pandas as pd
 
 from src.parser import parse_german_number, parse_date, map_columns, read_upload
-from src.engine import AnomalyEngine
+from src.engine import AnomalyEngine, _ALL_TESTS
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -859,7 +859,7 @@ class TestEngineFullRun:
         assert result["statistics"]["total_input"] == 0
 
     def test_all_test_methods_called(self):
-        """Alle 14 Tests liefern einen flag_counts-Eintrag."""
+        """Jeder registrierte Test liefert einen flag_counts-Eintrag."""
         df = _make_df(
             datum=["2024-01-15"] * 10,
             betrag=[f"{i * 100}" for i in range(1, 11)],
@@ -871,15 +871,8 @@ class TestEngineFullRun:
         result  = engine.run()
         fc      = result["statistics"]["flag_counts"]
 
-        expected_flags = {
-            "BETRAG_ZSCORE", "BETRAG_IQR", "NEAR_DUPLICATE",
-            "DOPPELTE_BELEGNUMMER", "BELEG_KREDITOR_DUPLIKAT",
-            "STORNO", "NEUER_KREDITOR_HOCH", "KONTO_BETRAG_ANOMALIE",
-            "LEERER_BUCHUNGSTEXT",
-            "RECHNUNGSDATUM_PERIODE", "BUCHUNGSTEXT_PERIODE",
-            "MONATS_ENTWICKLUNG", "FEHLENDE_MONATSBUCHUNG",
-            "ISOLATION_ANOMALIE",
-        }
+        # Single source of truth: erwartete Flags = alle registrierten Tests
+        expected_flags = {t.name for t in _ALL_TESTS}
         assert expected_flags == set(fc.keys()), (
             f"Fehlend: {expected_flags - set(fc.keys())}, "
             f"Überschuss: {set(fc.keys()) - expected_flags}"
