@@ -25,6 +25,7 @@ from urllib.parse import urlparse, urlunparse
 
 import pandas as pd
 import redis as redis_sync
+import structlog
 from celery import Celery, chord, group
 from celery.signals import setup_logging as celery_setup_logging, worker_process_init
 
@@ -149,6 +150,7 @@ def run_test_task(self, prepare_result: dict, test_name: str) -> dict:
     r = _redis_client()
     try:
         job_id = prepare_result["job_id"]
+        structlog.contextvars.bind_contextvars(job_id=job_id, test=test_name)
 
         if _is_cancelled(r, job_id):
             _log_redis(r, job_id, f"⏭️ {test_name}: übersprungen (abgebrochen)")
@@ -195,6 +197,7 @@ def run_test_task(self, prepare_result: dict, test_name: str) -> dict:
 
         return {"test_name": test_name, "flagged": flagged, "count": count}
     finally:
+        structlog.contextvars.clear_contextvars()
         r.close()
 
 
@@ -207,6 +210,7 @@ def merge_task(self, test_results: list[dict], prepare_result: dict) -> str:
     """Phase 3: Flags zusammenführen, Scores berechnen, Export."""
     r = _redis_client()
     job_id = prepare_result["job_id"]
+    structlog.contextvars.bind_contextvars(job_id=job_id)
     start_time = float(r.hget(f"job:{job_id}", "started_at") or time.time())
 
     try:
@@ -283,6 +287,7 @@ def merge_task(self, test_results: list[dict], prepare_result: dict) -> str:
                 os.unlink(parquet)
             except OSError:
                 pass
+        structlog.contextvars.clear_contextvars()
         r.close()
 
 
@@ -297,6 +302,8 @@ def analyze_task(self, job_id: str, filepath: str, config_dict: dict, enabled_te
     r = _redis_client()
     start_time = time.time()
     n_rows = 0  # Default: sequentieller Pfad (Datei löschen in finally)
+    # WHY(#16): job_id an jede Log-Zeile dieses Tasks binden (merge_contextvars)
+    structlog.contextvars.bind_contextvars(job_id=job_id)
 
     try:
         _set_status(r, job_id, "running", 0.0)
@@ -372,6 +379,7 @@ def analyze_task(self, job_id: str, filepath: str, config_dict: dict, enabled_te
 
     finally:
         # Original-CSV NICHT löschen — UI braucht sie für on-demand Charts
+        structlog.contextvars.clear_contextvars()
         r.close()
 
 

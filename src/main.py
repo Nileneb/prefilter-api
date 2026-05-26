@@ -53,8 +53,16 @@ def _redis() -> aioredis.Redis:
 
 @app.get("/health")
 async def health():
-    """Liveness check."""
-    return {"status": "ok", "version": __version__}
+    """Health check: prüft Redis-Verbindung (#16). HTTP 200 ok / 503 degraded."""
+    redis_ok = False
+    try:
+        r = _redis()
+        redis_ok = bool(await r.ping())
+        await r.aclose()
+    except Exception as exc:
+        logger.warning("Health: Redis nicht erreichbar", error=str(exc))
+    body = {"status": "ok" if redis_ok else "degraded", "version": __version__, "redis": redis_ok}
+    return JSONResponse(status_code=200 if redis_ok else 503, content=body)
 
 
 @app.post("/api/jobs", response_model=JobResponse, status_code=202)
