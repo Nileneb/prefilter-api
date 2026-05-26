@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from urllib.parse import urlparse, urlunparse
 
 import pandas as pd
 import redis as redis_sync
@@ -49,8 +50,18 @@ def _on_worker_process_init(**kwargs):
     """Re-initialisiert Logging in jedem geforkten Celery-Kindprozess."""
     setup_logging()
 
+def _make_backend_url(broker_url: str, db: int = 1) -> str:
+    """Leitet die Celery-Result-Backend-URL aus der Broker-URL ab.
+
+    Tauscht NUR die DB-Nummer (Pfad) aus — robust gegen Hostnamen/Passwörter
+    die Ziffern enthalten (anders als das frühere fragile str.replace).
+    """
+    parsed = urlparse(broker_url)
+    return urlunparse(parsed._replace(path=f"/{db}"))
+
+
 REDIS_URL         = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-REDIS_BACKEND_URL = REDIS_URL.replace("/0", "/1").replace("/2", "/1")
+REDIS_BACKEND_URL = os.environ.get("REDIS_BACKEND_URL") or _make_backend_url(REDIS_URL, db=1)
 
 celery_app = Celery(
     "prefilter",
