@@ -9,8 +9,8 @@ Berechnet optimierte Flag-Gewichte aus Prüfer-Feedback.
 
 from __future__ import annotations
 
-from src.feedback import FeedbackStore, FeedbackLabel, MIN_LABELS_FOR_TRAINING
 from src.engine import WEIGHTS
+from src.feedback import MIN_LABELS_FOR_TRAINING, FeedbackStore
 
 
 class TrainingLocked(Exception):

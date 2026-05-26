@@ -13,13 +13,10 @@ import pandas as pd
 import pytest
 
 from src.config import AnalysisConfig
+from src.embeddings import HAS_EMBEDDINGS, TextEmbedder, get_embedder
 from src.engine import AnomalyEngine
-from src.embeddings import HAS_EMBEDDINGS, get_embedder, TextEmbedder
 from src.kreditor_clustering import cluster_kreditors
-from src.tests.base import EngineStats
-from src.tests.duplikate import NearDuplicate
-from src.tests.isolation_anomaly import IsolationAnomalie, HAS_SKLEARN
-
+from src.tests.isolation_anomaly import HAS_SKLEARN
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 

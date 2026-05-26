@@ -15,6 +15,8 @@ Engine-Integration:
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -139,6 +141,13 @@ class TextKontoMatch(AnomalyTest):
 
     def _resolve_bezeichnung(self, df: pd.DataFrame, gt_path: str | None) -> str | None:
         """Bestimmt welche Bezeichnung-Spalte verwendet wird."""
+        # WHY: gt_lookup.csv ist optionale (private) Ground-Truth. Fehlt sie,
+        # auf Diamant-Bezeichnung zurückfallen statt mit FileNotFoundError zu
+        # crashen (sonst killt TEXT_KONTO_MATCH die ganze Analyse).
+        if gt_path and not os.path.exists(gt_path):
+            self.log("GT-Datei nicht gefunden → Fallback auf Diamant-Bezeichnung",
+                     gt_path=gt_path)
+            gt_path = None
         if gt_path:
             gt = pd.read_csv(gt_path)
             gt["konto_soll"] = gt["konto_soll"].astype(str).str.strip()
@@ -212,8 +221,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    from src.parser import normalize_columns
     from src.accounting import kontoklasse
+    from src.parser import normalize_columns
 
     print(f"Lade {args.input}...")
     df = pd.read_csv(args.input, sep=args.delimiter, encoding='utf-8-sig', low_memory=False)

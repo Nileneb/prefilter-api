@@ -18,13 +18,13 @@ import tempfile
 import time
 import uuid
 
+import redis.asyncio as aioredis
 from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-import redis.asyncio as aioredis
 
 from src import __version__
+from src.logging_config import get_logger, setup_logging
 from src.models import JobResponse, JobStatusResponse
-from src.logging_config import setup_logging, get_logger
 
 setup_logging()
 logger = get_logger("prefilter.api")
@@ -53,14 +53,20 @@ def _redis() -> aioredis.Redis:
 
 @app.get("/health")
 async def health():
-    """Health check: prüft Redis-Verbindung (#16). HTTP 200 ok / 503 degraded."""
+    """Liveness: Prozess läuft. Immer HTTP 200 (für CI/Container-Start-Check)."""
+    return {"status": "ok", "version": __version__}
+
+
+@app.get("/healthz")
+async def healthz():
+    """Readiness: prüft Redis-Verbindung (#16). HTTP 200 ok / 503 degraded."""
     redis_ok = False
     try:
         r = _redis()
         redis_ok = bool(await r.ping())
         await r.aclose()
     except Exception as exc:
-        logger.warning("Health: Redis nicht erreichbar", error=str(exc))
+        logger.warning("Healthz: Redis nicht erreichbar", error=str(exc))
     body = {"status": "ok" if redis_ok else "degraded", "version": __version__, "redis": redis_ok}
     return JSONResponse(status_code=200 if redis_ok else 503, content=body)
 

@@ -21,7 +21,6 @@ Soll/Haben-Vorzeichen:
 from __future__ import annotations
 
 import pandas as pd
-import numpy as np
 
 # ── Kontoklassen-Konstanten ──────────────────────────────────────────────────
 ERTRAG_MIN = 40000

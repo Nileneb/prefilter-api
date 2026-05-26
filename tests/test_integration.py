@@ -32,6 +32,7 @@ def redis_available():
 def test_client(redis_available):
     """FastAPI TestClient mit laufendem Redis."""
     from fastapi.testclient import TestClient
+
     from src.main import app
     return TestClient(app)
 

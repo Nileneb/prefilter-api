@@ -13,7 +13,6 @@ Bestandskonten (0–39999) und Kostenrechnungskonten (≥80000) sind ausgeschlos
 from __future__ import annotations
 
 import pandas as pd
-import numpy as np
 
 from src.accounting import kontoklasse
 from src.config import AnalysisConfig

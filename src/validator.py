@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-
 # ── Welcher Test braucht welche Spalten ──────────────────────────────────────
 
 TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {

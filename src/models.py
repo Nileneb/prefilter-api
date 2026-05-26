@@ -7,10 +7,10 @@ Wird von src/main.py (FastAPI) genutzt.
 from __future__ import annotations
 
 from typing import Any
+
 from pydantic import BaseModel, create_model
 
 from src.validator import ALL_TEST_NAMES
-
 
 # ── Job lifecycle ─────────────────────────────────────────────────────────────
 

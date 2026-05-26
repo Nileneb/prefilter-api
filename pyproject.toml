@@ -38,6 +38,19 @@ dev = [
 where = ["."]
 include = ["src*"]
 
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # Zeilenlänge bewusst locker
+
+[tool.ruff.lint.per-file-ignores]
+# numpy/pandas-bool-Vergleiche (== True/False) sind in Tests beabsichtigt
+"tests/*" = ["E712"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

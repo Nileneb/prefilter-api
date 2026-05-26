@@ -29,7 +29,6 @@ import pandas as pd
 
 from src.logging_config import get_logger
 
-
 _logger = get_logger("prefilter.tests")
 
 

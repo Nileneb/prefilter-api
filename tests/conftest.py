@@ -8,14 +8,13 @@ sonst Fallback auf synthetische Daten.
 from __future__ import annotations
 
 import os
-
-import pytest
-import pandas as pd
 from pathlib import Path
 
-from src.parser import read_upload, map_columns
-from src.engine import AnomalyEngine
+import pytest
+
 from src.config import AnalysisConfig
+from src.engine import AnomalyEngine
+from src.parser import map_columns, read_upload
 
 REAL_DATA_DIR = Path(os.environ.get("UPLOAD_STORE_DIR", "data/uploads"))
 FIXTURE_FILE = Path("tests/fixtures/150_buchungsdaten_sample.csv")

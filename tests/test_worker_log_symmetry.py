@@ -9,9 +9,9 @@ import time
 import pandas as pd
 import pytest
 
-import src.worker as worker
 import src.history as history
-from src.engine import AnomalyEngine, _ALL_TESTS
+import src.worker as worker
+from src.engine import _ALL_TESTS, AnomalyEngine
 
 
 class FakeRedis:

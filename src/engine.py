@@ -19,21 +19,22 @@ from typing import Callable
 
 import pandas as pd
 
-from src.accounting import kontoklasse, compute_signed_betrag
+from src import history
+from src.accounting import compute_signed_betrag, kontoklasse
 from src.config import AnalysisConfig
 from src.embeddings import HAS_EMBEDDINGS, get_embedder
 from src.kreditor_clustering import cluster_kreditors
 from src.logging_config import get_logger
-from src.parser import COLUMN_ALIASES, parse_german_number_series, parse_date_series
+from src.parser import COLUMN_ALIASES, parse_date_series, parse_german_number_series
 from src.tests.base import EngineStats
 from src.tests.betrag import get_tests as get_betrag_tests
+from src.tests.buchungslogik import _GU_FALSY
+from src.tests.buchungslogik import get_tests as get_buchungslogik_tests
 from src.tests.duplikate import get_tests as get_duplikate_tests
-from src.tests.buchungslogik import get_tests as get_buchungslogik_tests, _GU_FALSY
-from src.tests.kreditor import get_tests as get_kreditor_tests
-from src.tests.zeitreihe import get_tests as get_zeitreihe_tests
 from src.tests.isolation_anomaly import get_tests as get_isolation_tests
+from src.tests.kreditor import get_tests as get_kreditor_tests
 from src.tests.text_konto_match import get_tests as get_text_match_tests
-from src import history
+from src.tests.zeitreihe import get_tests as get_zeitreihe_tests
 
 logger = get_logger("prefilter.engine")
 

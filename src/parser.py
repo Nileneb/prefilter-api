@@ -18,11 +18,10 @@ Column mapping / file ingestion:
 
 import io
 import re
-from typing import Optional
 from datetime import datetime
+from typing import Optional
 
 import pandas as pd
-
 
 # ── Public exports ───────────────────────────────────────────
 __all__ = [

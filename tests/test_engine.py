@@ -15,9 +15,8 @@ from datetime import datetime
 
 import pandas as pd
 
-from src.parser import parse_german_number, parse_date, map_columns, read_upload
-from src.engine import AnomalyEngine, _ALL_TESTS
-
+from src.engine import _ALL_TESTS, AnomalyEngine
+from src.parser import map_columns, parse_date, parse_german_number, read_upload
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Parser-Tests

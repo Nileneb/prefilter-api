@@ -15,7 +15,6 @@ import pandas as pd
 from src.config import AnalysisConfig
 from src.tests.base import AnomalyTest, EngineStats
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Hilfsfunktion: Reguläre Zahlungsmuster erkennen
 # ─────────────────────────────────────────────────────────────────────────────
@@ -252,8 +251,6 @@ class NearDuplicate(AnomalyTest):
             # (Index im DF = Position im Embedding-Array, da Engine sequenziell
             # nummeriert und Embeddings in gleicher Reihenfolge erstellt)
             idx_arr = dated.index.to_numpy()
-            curr_pos = np.arange(len(idx_arr))
-            prev_pos = curr_pos - 1
             # Nur für close_mask == True die Similarity prüfen
             close_locs = np.where(close_mask.values)[0]
             if len(close_locs) > 0:
@@ -375,7 +372,7 @@ class DoppelteBelegnummer(AnomalyTest):
         # Top-5 häufigste Belegnummern
         beleg_counts = sub["belegnummer"].value_counts().head(5)
         for bn, cnt in beleg_counts.items():
-            self.log(f"Top-Belegnr", belegnummer=str(bn), count=int(cnt))
+            self.log("Top-Belegnr", belegnummer=str(bn), count=int(cnt))
 
         mask = pd.Series(False, index=df.index)
         mask.loc[grp_size.index[grp_size >= min_count]] = True

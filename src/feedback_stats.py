@@ -8,7 +8,8 @@ Nur verfügbar ab MIN_LABELS_FOR_STATS Labels.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from src.feedback import FeedbackStore, FeedbackLabel, MIN_LABELS_FOR_STATS
+
+from src.feedback import MIN_LABELS_FOR_STATS, FeedbackLabel, FeedbackStore
 
 
 @dataclass

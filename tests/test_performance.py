@@ -7,16 +7,15 @@ Markierung: @pytest.mark.slow → wird bei normalem `pytest` übersprungen.
 Aktivieren: pytest -m slow   ODER   pytest --run-slow
 """
 
-import time
 import random
-import string
+import time
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.parser import map_columns
 from src.engine import AnomalyEngine
+from src.parser import map_columns
 
 
 def _generate_synthetic_data(n: int = 500_000) -> pd.DataFrame:
@@ -120,9 +119,8 @@ def test_parallel_vs_sequential_identical():
 
     Nutzt 10k Zeilen (schneller als 500k, aber groß genug für alle Tests).
     """
-    from src.tests.base import EngineStats
-    from src.engine import _ALL_TESTS
     from src.config import AnalysisConfig
+    from src.engine import _ALL_TESTS
 
     df = _generate_synthetic_data(10_000)
     df = map_columns(df)
@@ -165,7 +163,7 @@ def test_parallel_vs_sequential_identical():
     assert seq_scores == par_scores
 
     print(f"\n{'='*60}")
-    print(f"  Parallel-Vergleich: 10k Zeilen — Ergebnisse identisch")
+    print("  Parallel-Vergleich: 10k Zeilen — Ergebnisse identisch")
     print(f"  Flags seq:  {sum(result_seq['statistics']['flag_counts'].values())}")
     print(f"  Flags par:  {sum(result_par['statistics']['flag_counts'].values())}")
     print(f"  Output:     {result_seq['statistics']['total_output']}")

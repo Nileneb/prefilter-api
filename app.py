@@ -16,24 +16,31 @@ import time
 import uuid
 from datetime import datetime
 
-import redis as redis_lib
-import pandas as pd
 import gradio as gr
+import pandas as pd
+import redis as redis_lib
 from celery import Celery
 
-from src.webhook import push_to_langdock
-from src.config import AnalysisConfig
-from src.file_store import store_upload, store_result, list_uploads
-from src.logging_config import setup_logging, get_logger
-from src.validator import (
-    ALL_TEST_NAMES, TEST_CATEGORIES,
-    validate_columns, format_validation_report, ValidationResult,
+from src.charts import (
+    DYNAMIC_CHART_TYPES,
+    ChartBuilder,
+    DynamicChartBuilder,
+    _empty_figure,
+    check_column_quality,
+    classify_columns,
 )
-from src.charts import ChartBuilder, DynamicChartBuilder, DYNAMIC_CHART_TYPES, classify_columns, check_column_quality, _empty_figure
-from src.feedback import FeedbackStore, FeedbackLabel, MIN_LABELS_FOR_STATS
+from src.config import AnalysisConfig
+from src.feedback import MIN_LABELS_FOR_STATS, FeedbackLabel, FeedbackStore
 from src.feedback_stats import format_feedback_report
-
-import plotly.graph_objects as go
+from src.file_store import list_uploads, store_result, store_upload
+from src.logging_config import get_logger, setup_logging
+from src.validator import (
+    ALL_TEST_NAMES,
+    TEST_CATEGORIES,
+    format_validation_report,
+    validate_columns,
+)
+from src.webhook import push_to_langdock
 
 # ── Logging ──────────────────────────────────────────────────
 setup_logging()
@@ -198,7 +205,7 @@ def validate_file(file):
         updates += [gr.update(value=True) for _ in ALL_TEST_NAMES]
         return updates
 
-    from src.parser import read_upload, map_columns
+    from src.parser import map_columns, read_upload
     try:
         df = read_upload(filepath)
         df = map_columns(df)
@@ -292,8 +299,8 @@ def analyze_file(
         log("📂 Lokaler Modus: Datei wird geladen...")
         yield current_state("Analyse läuft...")
 
-        from src.parser import read_upload, map_columns
         from src.engine import AnomalyEngine
+        from src.parser import map_columns, read_upload
 
         try:
             config = AnalysisConfig.model_validate(config_dict)
@@ -310,7 +317,7 @@ def analyze_file(
         # Instrumented run mit Live-Logging
         from src.engine import _ALL_TESTS, NUM_TESTS
         stats = engine._compute_stats()
-        log(f"📊 Statistiken berechnet")
+        log("📊 Statistiken berechnet")
         yield current_state("Analyse läuft...")
 
         for i, test in enumerate(_ALL_TESTS, start=1):
@@ -443,7 +450,7 @@ def analyze_file(
     session["engine_df"] = None  # wird on-demand beim ersten Chart-Klick gebaut
     # Mandant für Feedback ableiten
     try:
-        from src.parser import read_upload, map_columns
+        from src.parser import map_columns, read_upload
         _tmp_df = read_upload(dest)
         _tmp_df = map_columns(_tmp_df)
         session["mandant_id"] = _detect_mandant(_tmp_df, dest)
@@ -513,8 +520,8 @@ def _rebuild_df_for_charts(filepath: str, result: dict, flags_parquet: str | Non
     Liest die Datei, bereitet Spalten vor (_prepare), setzt dann Flags+Scores
     aus dem gespeicherten Flags-Parquet oder initialisiert leer.
     """
-    from src.parser import read_upload, map_columns
     from src.engine import AnomalyEngine
+    from src.parser import map_columns, read_upload
     try:
         df = read_upload(filepath)
         df = map_columns(df)

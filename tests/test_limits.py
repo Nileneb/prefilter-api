@@ -1,8 +1,6 @@
 """Tests für Upload- und Webhook-Größenlimits (#2, #8)."""
 
-import importlib
 
-import pytest
 
 
 def test_webhook_trims_rows_and_logs(monkeypatch):
@@ -34,6 +32,7 @@ def test_webhook_no_trim_when_small(monkeypatch):
 
 def test_upload_too_large_returns_413(monkeypatch):
     from fastapi.testclient import TestClient
+
     import src.main as main
     # Limit künstlich auf 1 KB senken
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 1024)

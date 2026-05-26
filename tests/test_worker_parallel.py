@@ -16,11 +16,10 @@ import tempfile
 import pandas as pd
 import pytest
 
-from src.parser import map_columns
-from src.engine import AnomalyEngine, _ALL_TESTS, _TEST_BY_NAME, NUM_TESTS
 from src.config import AnalysisConfig
+from src.engine import _ALL_TESTS, AnomalyEngine
+from src.parser import map_columns
 from src.tests.base import EngineStats
-
 
 # ── Testdaten ─────────────────────────────────────────────────────────────────
 

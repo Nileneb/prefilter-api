@@ -5,8 +5,8 @@ from pathlib import Path
 
 from src import __version__
 from src.engine import _ALL_TESTS
-from src.validator import ALL_TEST_NAMES
 from src.models import FlagCounts
+from src.validator import ALL_TEST_NAMES
 
 
 def test_pyproject_version_matches_package():

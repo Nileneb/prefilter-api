@@ -134,7 +134,7 @@ class FehlendeMonatsbuchung(AnomalyTest):
             # Debug: Top-5 Konten mit meisten Monaten
             top5 = konto_month_cnt.nlargest(5)
             for konto, n in top5.items():
-                self.log(f"Top-Konto", konto=str(konto), active_months=int(n),
+                self.log("Top-Konto", konto=str(konto), active_months=int(n),
                          needed=min_active)
             return 0
 

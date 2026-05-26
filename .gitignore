@@ -21,3 +21,8 @@ tests/fixtures/*.xls
 data/feedback/
 data/uploads/
 .github/copilot-instructions.md
+# Private Ground-Truth / Kontodaten — nicht committen (TEXT_KONTO_MATCH fällt
+# ohne diese Datei sauber auf die Diamant-Bezeichnung zurück)
+docs/gt_lookup.csv
+docs/gt_vs_diamant_diffs.csv
+docs/text_konto_match.py

@@ -1,15 +1,20 @@
 """Tests für src/charts.py — ChartBuilder mit synthetischen Daten."""
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
+from src.accounting import compute_signed_betrag, kontoklasse
 from src.charts import (
-    ChartBuilder, DynamicChartBuilder, DYNAMIC_CHART_TYPES,
-    classify_columns, check_column_quality, _empty_figure, _enrich_for_dynamic,
+    DYNAMIC_CHART_TYPES,
+    ChartBuilder,
+    DynamicChartBuilder,
+    _empty_figure,
+    _enrich_for_dynamic,
+    check_column_quality,
+    classify_columns,
 )
-from src.accounting import kontoklasse, compute_signed_betrag
 
 
 @pytest.fixture

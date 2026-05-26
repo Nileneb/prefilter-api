@@ -162,8 +162,9 @@ Das Dockerfile startet standardmäßig die FastAPI-REST-API auf Port **8000**
 `docker-compose.yml` läuft daher nur der **Gradio-UI-Service** (Port 7864) — Port
 8000 wird **bewusst nicht** nach außen gemappt. Wer die REST-API
 (`POST /api/jobs`, WebSocket-Logs) extern nutzen will, muss sie hinter einen
-Reverse-Proxy mit Authentifizierung stellen. Health-Check: `GET /health`
-(liefert Version + Redis-Status, HTTP 200/503).
+Reverse-Proxy mit Authentifizierung stellen. Health-Checks:
+`GET /health` (Liveness, immer 200) und `GET /healthz` (Readiness inkl.
+Redis-Ping, HTTP 200/503).
 
 ---
 

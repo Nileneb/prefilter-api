@@ -27,14 +27,14 @@ import pandas as pd
 import redis as redis_sync
 import structlog
 from celery import Celery, chord, group
-from celery.signals import setup_logging as celery_setup_logging, worker_process_init
+from celery.signals import setup_logging as celery_setup_logging
+from celery.signals import worker_process_init
 
 from src.config import AnalysisConfig
-from src.logging_config import setup_logging, get_logger
-from src.parser import read_upload, map_columns
-from src.engine import AnomalyEngine, NUM_TESTS, _ALL_TESTS, _TEST_BY_NAME, WEIGHTS, CRITICAL_FLAGS
+from src.engine import _ALL_TESTS, _TEST_BY_NAME, NUM_TESTS, AnomalyEngine
+from src.logging_config import get_logger, setup_logging
+from src.parser import COLUMN_ALIASES, map_columns, read_upload
 from src.tests.base import EngineStats
-from src.parser import COLUMN_ALIASES
 
 setup_logging()
 logger = get_logger("prefilter.worker")
