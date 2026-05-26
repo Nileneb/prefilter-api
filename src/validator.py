@@ -28,8 +28,11 @@ TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
     "STORNO":                 {"required": ["betrag"],   "optional": ["buchungstext", "generalumgekehrt"]},
     "NEUER_KREDITOR_HOCH":    {"required": ["kreditor", "betrag", "datum"]},
     "LEERER_BUCHUNGSTEXT":    {"required": ["buchungstext"]},
+    # WHY(#15): Diamant liefert kein separates rechnungsdatum. Der Test vergleicht
+    # _datum gegen erfassungsdatum ODER buchungsperiode — fehlen beide, läuft er
+    # immer leer. required_any blockiert ihn dann (statt still 0 Treffer).
     "RECHNUNGSDATUM_PERIODE": {"required": ["datum"],
-                               "optional": ["erfassungsdatum", "buchungsperiode"]},
+                               "required_any": ["erfassungsdatum", "buchungsperiode"]},
     "BUCHUNGSTEXT_PERIODE":   {"required": ["buchungstext", "datum"]},
     "MONATS_ENTWICKLUNG":     {"required": ["betrag", "datum"]},
     "FEHLENDE_MONATSBUCHUNG": {"required": ["datum"],     "optional": ["konto_soll"]},
@@ -86,6 +89,7 @@ def validate_columns(df: pd.DataFrame) -> ValidationResult:
         all_cols.update(req)
         required_anywhere.update(req)
         all_cols.update(reqs.get("optional", []))
+        all_cols.update(reqs.get("required_any", []))
 
     fill_rates: dict[str, float] = {}
     for col in sorted(all_cols):
@@ -102,13 +106,22 @@ def validate_columns(df: pd.DataFrame) -> ValidationResult:
     for test_name, reqs in TEST_REQUIREMENTS.items():
         required = reqs.get("required", [])
         optional = reqs.get("optional", [])
+        required_any = reqs.get("required_any", [])
 
         blocked_cols = [c for c in required if fill_rates.get(c, 0.0) == 0.0]
+        # required_any: mindestens eine dieser Spalten muss befüllt sein
+        any_satisfied = (not required_any) or any(
+            fill_rates.get(c, 0.0) > 0.0 for c in required_any
+        )
         sparse_cols = [c for c in required if 0 < fill_rates.get(c, 0.0) < 50.0]
         empty_opt = [c for c in optional if fill_rates.get(c, 0.0) == 0.0]
 
         if blocked_cols:
             result.tests_blocked[test_name] = ", ".join(blocked_cols) + " leer"
+        elif not any_satisfied:
+            result.tests_blocked[test_name] = (
+                "keine Vergleichsdatumsquelle (" + ", ".join(required_any) + " leer)"
+            )
         elif sparse_cols:
             details = ", ".join(f"{c} ({fill_rates[c]:.0f}%)" for c in sparse_cols)
             result.tests_degraded[test_name] = details + " dünn besetzt"
