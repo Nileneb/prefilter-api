@@ -83,10 +83,12 @@ def load_last_run(mandant_id: str) -> dict | None:
     if not mandant_dir.exists():
         return None
     files = sorted(mandant_dir.glob("run_*.json"), reverse=True)
-    if not files:
+    # WHY(#14): files[0] ist der gerade gespeicherte aktuelle Lauf. Beim ersten
+    # Lauf gäbe es nur diesen einen → kein sinnvoller Vergleich (Run mit sich
+    # selbst). Erst ab 2 Einträgen ist files[1] der echte vorherige Lauf.
+    if len(files) < 2:
         return None
-    # Zweiter Eintrag = vorheriger Lauf (erster ist der gerade gespeicherte)
-    target = files[1] if len(files) > 1 else files[0]
+    target = files[1]
     try:
         return json.loads(target.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
