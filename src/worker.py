@@ -229,27 +229,21 @@ def merge_task(self, test_results: list[dict], prepare_result: dict) -> str:
         engine.flag_counts = {}
         engine.stammdaten_report = {"fuzzy_kreditor_matches": []}
 
+        # WHY(#17.1): Symmetrie zum sequentiellen Pfad — engine._log an Redis
+        # brücken, damit die _export()-Summary ("ERGEBNIS:", "Top-Flags:" …) auch
+        # im parallelen Pfad im UI-Log erscheint (statt nur in-memory verloren zu
+        # gehen). Ersetzt den früheren abweichenden expliziten FERTIG-Block.
+        def _bridge_log(msg: str) -> None:
+            engine.logs.append(msg)
+            logger.info(msg)
+            _log_redis(r, job_id, msg)
+
+        engine._log = _bridge_log
+
         result = engine.apply_flags_and_export(test_results)
 
         elapsed = round(time.time() - start_time, 1)
-        stats = result["statistics"]
-        n_verd = stats["total_suspicious"]
-        n_total = stats["total_input"]
-        n_output = stats["total_output"]
-        pct_str = stats["filter_ratio"]
-
-        # Zusammenfassung in Redis-Log
-        _log_redis(r, job_id, "════════════════════════════════════════════")
-        _log_redis(r, job_id, f"📋 FERTIG: {n_verd:,} von {n_total:,} verdächtig ({pct_str})".replace(",", "."))
-        _log_redis(r, job_id, f"   Ausgegeben: {n_output:,} (Top nach Score)".replace(",", "."))
-        _log_redis(r, job_id, f"   Laufzeit: {elapsed}s")
-        top_flags = sorted(
-            ((k, v) for k, v in stats["flag_counts"].items() if v > 0),
-            key=lambda x: -x[1],
-        )[:5]
-        if top_flags:
-            _log_redis(r, job_id, f"   Top: {', '.join(f'{k} ({v:,})'.replace(',', '.') for k, v in top_flags)}")
-        _log_redis(r, job_id, "════════════════════════════════════════════")
+        _log_redis(r, job_id, f"⏱️ Laufzeit: {elapsed}s")
 
         # Flags-Parquet für UI-Charts speichern (nur flag_* + _score)
         flags_path = prepare_result["parquet_path"].replace("_prepared.parquet", "_flags.parquet")
