@@ -340,9 +340,32 @@ in der Config — die Checkbox allein startet den Test nicht.
 
 ### Scoring
 
-- Jedes ausgelöste Flag addiert sein **Gewicht** zum `anomaly_score` der Buchung.
+- Jedes ausgelöste Flag addiert sein **Gewicht** zum `anomaly_score` der Buchung:
+  `score = Σ flag_X · weight(X)`, mit `MAX_POSSIBLE_SCORE = 27.0`.
 - Buchungen mit `anomaly_score ≥ 2.0` oder mindestens einem kritischen Flag werden ausgegeben.
 - Maximal **1.000 Zeilen** im Output (sortiert nach Score absteigend).
+
+### Berechnungs-Workflow (nachvollziehbar, keine Blackbox)
+
+Der vollständige Weg von der Datei bis zum Score — inkl. aller Gewichte und der
+Feedback-Schleife — ist in **[`docs/BERECHNUNG.md`](docs/BERECHNUNG.md)** mit zwei
+Mermaid-Diagrammen dokumentiert. Kurzform der Pipeline:
+
+```mermaid
+flowchart TD
+    A["Upload CSV/XLS/XLSX"] --> B["Parser + map_columns"]
+    B --> C["Validator: tests_ok / degraded / blocked"]
+    C --> D["Engine._prepare + compute_stats"]
+    D --> E{"je Test in _ALL_TESTS<br/>aktiviert?"}
+    E -->|ja| F["test.run, flag_NAME = bool"]
+    F --> E
+    E ==>|"alle 15 Tests"| G["score = Summe flag x weight"]
+    G --> H{"score >= 2.0 ODER critical flag?"}
+    H -->|ja| I["sort DESC, Top-N Output"]
+    H -->|nein| J["verworfen"]
+    I --> K["Feedback tp/fp -> ScoreReweighter (ab 500)"]
+    K -.->|custom_weights| G
+```
 
 ---
 
