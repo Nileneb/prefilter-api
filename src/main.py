@@ -31,6 +31,9 @@ logger = get_logger("prefilter.api")
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 JOB_TTL   = int(os.environ.get("JOB_TTL_SECONDS", "3600"))   # 1 Stunde
+# WHY(#2): Unbegrenztes file.read() → DoS/RAM-Erschöpfung. Upload gekappt.
+MAX_UPLOAD_SIZE_MB = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "100"))
+MAX_UPLOAD_BYTES   = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 app = FastAPI(
     title="Buchungs-Anomalie Pre-Filter API",
@@ -62,12 +65,21 @@ async def create_job(
     """Neuen Analyse-Job anlegen. Gibt Job-ID zurück; Analyse läuft asynchron."""
     job_id = str(uuid.uuid4())
 
-    # Datei in temporäres Verzeichnis schreiben
+    # Datei gestreamt in temporäres Verzeichnis schreiben, Größe kappen (#2)
     suffix = os.path.splitext(file.filename or "upload")[1].lower() or ".csv"
+    total = 0
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-        content = await file.read()
-        f.write(content)
         filepath = f.name
+        while chunk := await file.read(1024 * 1024):
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                f.close()
+                os.unlink(filepath)
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": f"Datei zu groß (max {MAX_UPLOAD_SIZE_MB} MB)"},
+                )
+            f.write(chunk)
 
     # Config parsen (default: leeres Dict → AnalysisConfig-Defaults)
     try:

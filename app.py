@@ -47,6 +47,7 @@ GRADIO_USERNAME      = os.environ.get("GRADIO_USERNAME", "")
 GRADIO_PASSWORD      = os.environ.get("GRADIO_PASSWORD", "")
 ROOT_PATH            = os.environ.get("ROOT_PATH", "")
 JOB_TTL              = int(os.environ.get("JOB_TTL_SECONDS", "3600"))
+MAX_UPLOAD_SIZE_MB   = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "100"))  # WHY(#2): DoS-Schutz
 
 # ── Redis + Celery (lazy connect, Fallback wenn nicht verfügbar) ────
 _LOCAL_MODE = False
@@ -1083,6 +1084,7 @@ if __name__ == "__main__":
         "server_port": 7864,
         "share":       False,
         "auth":        auth,
+        "max_file_size": f"{MAX_UPLOAD_SIZE_MB}mb",  # WHY(#2): Upload-Größenlimit
         "theme":       gr.themes.Soft(),
         "css":         ".main-title { text-align: center; margin-bottom: 0.5em; } "
                        ".subtitle   { text-align: center; color: #666; margin-bottom: 1.5em; }",
