@@ -143,9 +143,8 @@ HISTORY_DIR=/data/history
 LOG_LEVEL=INFO          # DEBUG | INFO | WARNING | ERROR
 LOG_FORMAT=json         # json (Production) | console (Entwicklung)
 
-# Größenlimits (DoS-Schutz)
-MAX_UPLOAD_SIZE_MB=100  # Max. Upload-Größe (Gradio + REST-API → HTTP 413)
-WEBHOOK_MAX_ROWS=100    # Max. Buchungen im Webhook-Payload
+# Webhook-Payload kürzen (kein Upload-Limit — große Buchungsexporte sind erwünscht)
+WEBHOOK_MAX_ROWS=100    # Max. Buchungen im Webhook-Payload an Langdock
 WEBHOOK_MAX_LOG_LINES=50
 
 # Redis (Result-Backend wird sonst aus REDIS_URL abgeleitet, DB 1)

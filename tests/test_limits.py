@@ -1,6 +1,4 @@
-"""Tests für Upload- und Webhook-Größenlimits (#2, #8)."""
-
-
+"""Tests für das Webhook-Payload-Limit (#8). Upload hat bewusst KEIN Limit."""
 
 
 def test_webhook_trims_rows_and_logs(monkeypatch):
@@ -28,20 +26,3 @@ def test_webhook_no_trim_when_small(monkeypatch):
     trimmed = webhook._trim_payload(payload)
     assert "verdaechtige_buchungen_truncated" not in trimmed
     assert len(trimmed["verdaechtige_buchungen"]) == 1
-
-
-def test_upload_too_large_returns_413(monkeypatch):
-    from fastapi.testclient import TestClient
-
-    import src.main as main
-    # Limit künstlich auf 1 KB senken
-    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 1024)
-    client = TestClient(main.app)
-
-    big = b"x" * 4096
-    resp = client.post(
-        "/api/jobs",
-        files={"file": ("big.csv", big, "text/csv")},
-    )
-    assert resp.status_code == 413
-    assert "zu groß" in resp.json()["error"]
