@@ -81,16 +81,6 @@ class AnalysisConfig(BaseModel):
         description="Mindestanzahl Buchungen pro Konto für KONTO_BETRAG_ANOMALIE (Standard: 5)",
     )
 
-    # ── Kontoklassenspezifische Abweichungsgrenzen ───────────
-    ertrag_abweichung_pct: float = Field(
-        0.05, ge=0.01, le=1.0,
-        description="LEGACY — nicht mehr für KONTO_BETRAG_ANOMALIE verwendet. Reserviert für zukünftige Nutzung.",
-    )
-    aufwand_abweichung_pct: float = Field(
-        0.20, ge=0.01, le=1.0,
-        description="LEGACY — nicht mehr für KONTO_BETRAG_ANOMALIE verwendet. Reserviert für zukünftige Nutzung.",
-    )
-
     # ── Monats-Entwicklung ───────────────────────────────────
     monats_entwicklung_zscore: float = Field(
         3.0, ge=1.0,
