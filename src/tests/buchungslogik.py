@@ -61,7 +61,7 @@ class LeererBuchungstext(AnomalyTest):
     name = "LEERER_BUCHUNGSTEXT"
     weight = 1.0
     critical = False
-    required_columns = ["buchungstext", "_kontoklasse"]
+    required_columns = ["buchungstext", "_kontoklasse", "_konto_in_scope"]
 
     _GENERIC = frozenset({
         "diverse", "verschiedenes", "sonstiges", "test",
@@ -72,10 +72,9 @@ class LeererBuchungstext(AnomalyTest):
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         txt  = df["buchungstext"].astype(str).str.strip()
         mask = (txt == "") | (txt.str.lower().isin(self._GENERIC)) | (txt.str.len() <= 2)
-        # Nur PnL-Konten (Ertrag/Aufwand) flaggen — Bestand/Kostenrechnung ignorieren
-        if "_kontoklasse" in df.columns:
-            pnl_mask = df["_kontoklasse"].isin({"Ertrag", "Aufwand"})
-            mask = mask & pnl_mask
+        # Konto-Bereichsfilter (global, Default GuV) statt hardcoded PnL
+        if "_konto_in_scope" in df.columns:
+            mask = mask & df["_konto_in_scope"].fillna(False).astype(bool)
         return self._flag(df, mask)
 
 

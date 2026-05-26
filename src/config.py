@@ -97,6 +97,25 @@ class AnalysisConfig(BaseModel):
         description="Mindestanteil aktiver Monate für FEHLENDE_MONATSBUCHUNG (Standard: 0.5 = 50%)",
     )
 
+    # ── Globaler Konto-Bereichsfilter (GuV) ──────────────────
+    # WHY: Die Anomalie-Erkennung zielt fachlich auf GuV-Konten — Ertrag
+    # (40000–59999) + Aufwand (60000–79999). Bestandskonten (<40000) und
+    # Kostenrechnung (≥80000) sind keine sinnvollen Prüfziele. Dieser EINE
+    # Filter gilt für ALLE Tests (statt früher: hardcoded bei Betrag, separat
+    # bei TEXT_KONTO_MATCH, gar nicht bei den übrigen).
+    konto_filter_enabled: bool = Field(
+        True,
+        description="Konto-Bereichsfilter aktiv. False = alle Konten einbeziehen.",
+    )
+    konto_filter_min: int = Field(
+        40000, ge=0,
+        description="Untergrenze konto_soll (inklusive). Standard: 40000 (Erträge ab).",
+    )
+    konto_filter_max: int = Field(
+        80000, ge=0,
+        description="Obergrenze konto_soll (exklusive). Standard: 80000 (Aufwände bis 79999).",
+    )
+
     # ── Output-Steuerung ─────────────────────────────────────
     output_threshold: float = Field(
         2.0, ge=0.0,
@@ -129,8 +148,8 @@ class AnalysisConfig(BaseModel):
         description="Erwarteter Anomalie-Anteil für Isolation Forest (Standard: 0.02 = 2%)",
     )
     isolation_min_bookings: int = Field(
-        5000, ge=50,
-        description="Mindestanzahl Buchungen für ISOLATION_ANOMALIE — darunter zu unzuverlässig (Standard: 5000). Sonst 0 + Warnung.",
+        1000, ge=50,
+        description="Mindestanzahl Buchungen für ISOLATION_ANOMALIE — darunter zu unzuverlässig (Standard: 1000). Sonst 0 + Warnung.",
     )
 
     # ── Text-Konto-Match ─────────────────────────────────────────────────────
@@ -146,14 +165,7 @@ class AnalysisConfig(BaseModel):
         "docs/gt_lookup.csv",
         description="Pfad zur Ground-Truth-CSV (konto_soll,gt_bezeichnung). None = Diamant-Bezeichnung.",
     )
-    text_konto_konto_min: int = Field(
-        40000, ge=0,
-        description="Untergrenze konto_soll für TEXT_KONTO_MATCH (inklusive). Standard: 40000 (Erträge ab).",
-    )
-    text_konto_konto_max: int = Field(
-        80000, ge=0,
-        description="Obergrenze konto_soll für TEXT_KONTO_MATCH (exklusive). Standard: 80000 (Aufwände bis 79999).",
-    )
+    # Konto-Bereich kommt jetzt aus dem globalen konto_filter_* (s.o.), nicht mehr test-spezifisch.
 
     # ── Gelernte Gewichte (via Feedback-Training) ─────────────
     custom_weights: dict[str, float] | None = Field(

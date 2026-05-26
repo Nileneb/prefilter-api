@@ -40,18 +40,15 @@ class TextKontoMatch(AnomalyTest):
     name = "TEXT_KONTO_MATCH"
     weight = 2.0
     critical = False
-    required_columns = ["buchungstext", "konto_soll"]
+    required_columns = ["buchungstext", "konto_soll", "_konto_in_scope"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         threshold = getattr(config, "text_konto_threshold", 0.3)
         min_bookings = getattr(config, "text_konto_min_bookings", 5)
         gt_lookup_path = getattr(config, "text_konto_gt_path", None)
-        konto_min = getattr(config, "text_konto_konto_min", 40000)
-        konto_max = getattr(config, "text_konto_konto_max", 80000)
 
         self.log("Config", threshold=threshold, min_bookings=min_bookings,
-                 has_embeddings=HAS_EMBEDDINGS, gt_path=gt_lookup_path,
-                 konto_range=f"{konto_min}–{konto_max - 1}")
+                 has_embeddings=HAS_EMBEDDINGS, gt_path=gt_lookup_path)
 
         if not HAS_EMBEDDINGS:
             self.log("SKIP: sentence-transformers nicht verfügbar")
@@ -73,17 +70,12 @@ class TextKontoMatch(AnomalyTest):
             & df[bez_col].astype(str).str.strip().ne("")
         )
 
-        # Sachkonto-Bereichsfilter: nur konto_soll in [konto_min, konto_max)
-        # Non-Digits strippen (z.B. "40.000" → 40000) — identisch zu accounting.kontoklasse()
-        konto_num = pd.to_numeric(
-            df["konto_soll"].astype(str).str.strip().str.replace(r"\D", "", regex=True),
-            errors="coerce",
-        )
-        has_text = has_text & konto_num.between(konto_min, konto_max - 1, inclusive="both")
+        # Konto-Bereichsfilter: global (Default GuV) statt test-spezifisch
+        if "_konto_in_scope" in df.columns:
+            has_text = has_text & df["_konto_in_scope"].fillna(False).astype(bool)
 
         n_eligible = int(has_text.sum())
-        self.log("Eligible", n_eligible=n_eligible, total=len(df),
-                 konto_range=f"{konto_min}–{konto_max - 1}")
+        self.log("Eligible", n_eligible=n_eligible, total=len(df))
         if n_eligible == 0:
             return 0
 

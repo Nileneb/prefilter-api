@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.accounting import kontoklasse
 from src.config import AnalysisConfig
 from src.tests.base import AnomalyTest, EngineStats
 
@@ -19,7 +18,7 @@ class MonatsEntwicklung(AnomalyTest):
     name = "MONATS_ENTWICKLUNG"
     weight = 1.5
     critical = False
-    required_columns = ["_abs", "_datum", "konto_soll", "_is_storno", "_kontoklasse"]
+    required_columns = ["_abs", "_datum", "konto_soll", "_is_storno", "_kontoklasse", "_konto_in_scope"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
         # Stornos ausschließen
@@ -30,10 +29,12 @@ class MonatsEntwicklung(AnomalyTest):
         if len(subset) < 10:
             return 0
 
-        # GuV-Konten (Ertrag + Aufwand)
-        kl = df.loc[has_konto_date, "_kontoklasse"] if "_kontoklasse" in df.columns else kontoklasse(subset["konto_soll"])
-        pnl_mask = kl.isin(["Ertrag", "Aufwand"])
-        pnl      = subset.loc[pnl_mask].copy()
+        # Konto-Bereichsfilter (global, Default GuV) statt hardcoded Ertrag/Aufwand
+        if "_konto_in_scope" in df.columns:
+            scope_mask = df.loc[has_konto_date, "_konto_in_scope"].fillna(False).astype(bool)
+        else:
+            scope_mask = pd.Series(True, index=subset.index)
+        pnl = subset.loc[scope_mask].copy()
 
         if len(pnl) < 10:
             return 0

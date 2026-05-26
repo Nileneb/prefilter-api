@@ -277,6 +277,22 @@ class AnomalyEngine:
         else:
             df["_kreditor_canonical"] = df["kreditor"].astype(str).str.strip()
 
+        # WHY: globaler Konto-Bereichsfilter (GuV) — EINE Maske für ALLE Tests.
+        # Ersetzt die früher inkonsistenten Hardcodes (Betrag) bzw. den
+        # TEXT_KONTO_MATCH-Sonderfall. Out-of-scope-Flags werden in
+        # _compute_scores zentral genullt; konto-bewusste Tests lesen die Maske.
+        cfg = self.config
+        if "konto_soll" in df.columns and getattr(cfg, "konto_filter_enabled", True):
+            knum = pd.to_numeric(
+                df["konto_soll"].astype(str).str.strip().str.replace(r"\D", "", regex=True),
+                errors="coerce",
+            )
+            df["_konto_in_scope"] = knum.between(
+                cfg.konto_filter_min, cfg.konto_filter_max - 1, inclusive="both"
+            ).fillna(False)
+        else:
+            df["_konto_in_scope"] = True
+
         # Boolean-Spalten — eine pro Flag (kein Listen-Anti-Pattern)
         for name in _FLAG_NAMES:
             df[f"flag_{name}"] = False
@@ -351,12 +367,29 @@ class AnomalyEngine:
         return self._export()
 
     def _compute_scores(self) -> None:
-        score = pd.Series(0.0, index=self.df.index)
+        df = self.df
+        # WHY(#konto-filter): Flags außerhalb des Konto-Bereichs zentral nullen →
+        # wirkt einheitlich auf ALLE Tests. Danach flag_counts truthful neu zählen
+        # (gleiche Keys wie zuvor — nur Werte post-Filter).
+        if "_konto_in_scope" in df.columns:
+            out_of_scope = ~df["_konto_in_scope"].fillna(False).astype(bool)
+            if out_of_scope.any():
+                flag_cols = [f"flag_{n}" for n in WEIGHTS if f"flag_{n}" in df.columns]
+                df.loc[out_of_scope, flag_cols] = False
+                self.flag_counts = {
+                    name: int(df[f"flag_{name}"].fillna(False).sum())
+                    for name in self.flag_counts
+                    if f"flag_{name}" in df.columns
+                }
+
+        score = pd.Series(0.0, index=df.index)
         custom = self.config.custom_weights
         for name, weight in WEIGHTS.items():
+            if f"flag_{name}" not in df.columns:
+                continue
             w = custom.get(name, weight) if custom else weight
-            score += self.df[f"flag_{name}"].astype(float) * w
-        self.df["_score"] = score
+            score += df[f"flag_{name}"].fillna(False).astype(float) * w
+        df["_score"] = score
 
     # ── Run ───────────────────────────────────────────────────────────────────
 

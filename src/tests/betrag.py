@@ -6,8 +6,9 @@ Tests:
     BETRAG_IQR             — Betrag > IQR-Fence (NUR Ertrags- + Aufwandskonten)
     KONTO_BETRAG_ANOMALIE  — Betrag weicht > konto_betrag_sigma Standardabweichungen vom Konto-Durchschnitt ab
 
-NUR Ertrags- (40000–59999) und Aufwandskonten (60000–79999) werden analysiert.
-Bestandskonten (0–39999) und Kostenrechnungskonten (≥80000) sind ausgeschlossen.
+Welche Konten analysiert werden, steuert der globale Konto-Bereichsfilter
+(_konto_in_scope, Default GuV 40000–79999) — nicht mehr hier hardcoded.
+Statistiken werden weiterhin getrennt je Kontoklasse berechnet.
 """
 
 from __future__ import annotations
@@ -18,30 +19,32 @@ from src.accounting import kontoklasse
 from src.config import AnalysisConfig
 from src.tests.base import AnomalyTest, EngineStats
 
-# Nur Ertrags- und Aufwandskonten werden analysiert
-_GUV_KLASSEN = {"Ertrag", "Aufwand"}
+
+def _in_scope(df: pd.DataFrame) -> pd.Series:
+    """Globaler Konto-Bereichsfilter (in _prepare gesetzt), Fallback: alles."""
+    if "_konto_in_scope" in df.columns:
+        return df["_konto_in_scope"].fillna(False).astype(bool)
+    return pd.Series(True, index=df.index)
 
 
 class BetragZscore(AnomalyTest):
     name = "BETRAG_ZSCORE"
     weight = 2.0
     critical = True
-    required_columns = ["_abs", "_betrag", "konto_soll", "_is_storno", "_kontoklasse"]
+    required_columns = ["_abs", "_betrag", "konto_soll", "_is_storno", "_kontoklasse", "_konto_in_scope"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        # Stornos aus Berechnung ausschließen
+        # Stornos + Out-of-scope-Konten aus Berechnung ausschließen
         is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
-        has_val = (df["_abs"] > 0) & (~is_storno)
+        has_val = (df["_abs"] > 0) & (~is_storno) & _in_scope(df)
         if not has_val.any():
             return self._flag(df, pd.Series(False, index=df.index))
 
         klasse = df["_kontoklasse"] if "_kontoklasse" in df.columns else kontoklasse(df["konto_soll"])
         mask = pd.Series(False, index=df.index)
 
-        # NUR Ertrag + Aufwand (Bestand + Kostenrechnung ausgeschlossen)
+        # Statistik getrennt je Kontoklasse (Ertrag/Aufwand/… im Scope)
         for kl in klasse[has_val].unique():
-            if kl not in _GUV_KLASSEN:
-                continue
             sel = has_val & (klasse == kl)
             vals = df.loc[sel, "_abs"]
             if len(vals) < 2:
@@ -59,22 +62,20 @@ class BetragIqr(AnomalyTest):
     name = "BETRAG_IQR"
     weight = 1.5
     critical = False
-    required_columns = ["_abs", "_betrag", "konto_soll", "_is_storno", "_kontoklasse"]
+    required_columns = ["_abs", "_betrag", "konto_soll", "_is_storno", "_kontoklasse", "_konto_in_scope"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        # Stornos aus Berechnung ausschließen
+        # Stornos + Out-of-scope-Konten aus Berechnung ausschließen
         is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
-        has_val = (df["_abs"] > 0) & (~is_storno)
+        has_val = (df["_abs"] > 0) & (~is_storno) & _in_scope(df)
         if not has_val.any():
             return self._flag(df, pd.Series(False, index=df.index))
 
         klasse = df["_kontoklasse"] if "_kontoklasse" in df.columns else kontoklasse(df["konto_soll"])
         mask = pd.Series(False, index=df.index)
 
-        # NUR Ertrag + Aufwand (Bestand + Kostenrechnung ausgeschlossen)
+        # Statistik getrennt je Kontoklasse (im Scope)
         for kl in klasse[has_val].unique():
-            if kl not in _GUV_KLASSEN:
-                continue
             sel = has_val & (klasse == kl)
             vals = df.loc[sel, "_abs"]
             if len(vals) < 4:
@@ -93,17 +94,13 @@ class KontoBetragAnomalie(AnomalyTest):
     name = "KONTO_BETRAG_ANOMALIE"
     weight = 2.0
     critical = True
-    required_columns = ["_abs", "_betrag", "konto_soll", "_is_storno", "_kontoklasse"]
+    required_columns = ["_abs", "_betrag", "konto_soll", "_is_storno", "_kontoklasse", "_konto_in_scope"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        # Stornos aus Berechnung ausschließen
+        # Stornos + Out-of-scope-Konten aus Berechnung ausschließen
         is_storno = df.get("_is_storno", pd.Series(False, index=df.index))
         has_konto = df["konto_soll"].astype(str).str.strip() != ""
-
-        # NUR Ertrag + Aufwand
-        kl = df["_kontoklasse"] if "_kontoklasse" in df.columns else kontoklasse(df["konto_soll"])
-        pnl_mask = kl.isin(_GUV_KLASSEN)
-        work_mask = has_konto & (df["_abs"] > 0) & (~is_storno) & pnl_mask
+        work_mask = has_konto & (df["_abs"] > 0) & (~is_storno) & _in_scope(df)
 
         if not work_mask.any():
             return 0

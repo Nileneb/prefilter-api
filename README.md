@@ -319,9 +319,17 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 | 12 | `MONATS_ENTWICKLUNG`      | 1.5     |          | Monatssumme weicht > 3.0σ vom Konto-Durchschnitt ab (Z-Score)                 |
 | 13 | `FEHLENDE_MONATSBUCHUNG`  | 1.0     |          | Konto hat regulär monatliche Buchungen, fehlt aber in einem Monat         |
 | 14 | `ISOLATION_ANOMALIE`      | 1.5     |          | Isolation-Forest Catch-All (experimentell, default deaktiviert)           |
-| 15 | `TEXT_KONTO_MATCH`        | 2.0     |          | Buchungstext passt nicht zur Kontobezeichnung (Embeddings, Sachkonto 40000–79999) |
+| 15 | `TEXT_KONTO_MATCH`        | 2.0     |          | Buchungstext passt nicht zur Kontobezeichnung (Embeddings) |
 
 **Kritische Flags** führen dazu, dass die Buchung **immer** im Output erscheint, unabhängig vom Score-Schwellenwert.
+
+### Konten-Bereich (global) & Gewichte
+
+Alle Tests respektieren **einen** Konto-Bereichsfilter (Default GuV **40000–79999** —
+Ertrag + Aufwand; Bestand/Kostenrechnung sind kein Prüfziel). In der UI unter „⚙️
+Erweiterte Einstellungen" einstellbar (oder „Alle Konten einbeziehen"). Ebenso lässt
+sich pro Test das **Gewicht** (0.1–5.0) live setzen und die vom Feedback-Trainer
+gelernten Gewichte laden. Details: [`docs/BERECHNUNG.md`](docs/BERECHNUNG.md) §3–4c.
 
 ### ISOLATION_ANOMALIE — experimentell (Test #14)
 
@@ -330,8 +338,8 @@ Datum-Zyklik, erste 10 Embedding-Dimensionen). **Per Default deaktiviert.** Zwei
 Schalter müssen zusammenpassen: die UI-Checkbox **und** `isolation_enabled=True`
 in der Config — die Checkbox allein startet den Test nicht.
 
-- **Wann sinnvoll?** Erst ab **~5.000 Buchungen** (`isolation_min_bookings`, Default
-  5000). Darunter liefert der Test **0 Treffer + Warnung**, da zu wenig Daten für
+- **Wann sinnvoll?** Erst ab **~1.000 Buchungen** (`isolation_min_bookings`, Default
+  1000). Darunter liefert der Test **0 Treffer + Warnung**, da zu wenig Daten für
   zuverlässige Anomalien.
 - **`isolation_contamination`** (Default 0.02 = 2%): erwarteter Anomalie-Anteil.
   Höher → mehr Treffer (mehr False Positives), niedriger → konservativer.

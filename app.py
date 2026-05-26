@@ -30,10 +30,12 @@ from src.charts import (
     classify_columns,
 )
 from src.config import AnalysisConfig
+from src.engine import CRITICAL_FLAGS, WEIGHTS
 from src.feedback import MIN_LABELS_FOR_STATS, FeedbackLabel, FeedbackStore
 from src.feedback_stats import format_feedback_report
 from src.file_store import list_uploads, store_result, store_upload
 from src.logging_config import get_logger, setup_logging
+from src.trainer import ScoreReweighter, TrainingLocked
 from src.validator import (
     ALL_TEST_NAMES,
     TEST_CATEGORIES,
@@ -89,6 +91,12 @@ def _new_session() -> dict:
 
 # FeedbackStore schreibt JSONL pro Mandant (append) → prozessweit teilbar.
 _feedback_store = FeedbackStore()
+
+# WHY: Kanonische UI-Reihenfolge = flache TEST_CATEGORIES (so werden die Controls
+# gebaut). FRÜHER wurde gegen ALL_TEST_NAMES gemappt — das hatte eine ANDERE
+# Reihenfolge (NEUER_KREDITOR_HOCH ↔ LEERER_BUCHUNGSTEXT vertauscht) → Checkboxen
+# mappten auf den falschen Test. Eine Quelle für Controls UND Mapping.
+_UI_TEST_ORDER: list[str] = [name for names in TEST_CATEGORIES.values() for name in names]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -217,14 +225,11 @@ def validate_file(file):
     v = validate_columns(df)
     report = format_validation_report(v)
 
-    # Checkbox-States: blockierte Tests ausschalten
-    checkbox_updates = []
-    for test_name in ALL_TEST_NAMES:
-        if test_name in v.tests_blocked:
-            checkbox_updates.append(gr.update(value=False))
-        else:
-            checkbox_updates.append(gr.update(value=True))
-
+    # Checkbox-States: blockierte Tests ausschalten (kanonische UI-Reihenfolge)
+    checkbox_updates = [
+        gr.update(value=test_name not in v.tests_blocked)
+        for test_name in _UI_TEST_ORDER
+    ]
     return [gr.update(value=report)] + checkbox_updates
 
 
@@ -242,9 +247,10 @@ def analyze_file(
     output_threshold: float,
     prefix_ignore: str,
     text_konto_threshold: float,
-    text_konto_konto_min: int,
-    text_konto_konto_max: int,
-    *test_toggles,
+    konto_filter_all: bool,
+    konto_filter_min: int,
+    konto_filter_max: int,
+    *test_controls,
 ):
     """Generator: yielded (summary, logs, table, csv, session) bei jedem Schritt."""
     session.update(_new_session())
@@ -273,15 +279,23 @@ def analyze_file(
         yield current_state(f"Nicht unterstuetzt: {ext} -- nur CSV, XLS, XLSX")
         return
 
-    # Enabled tests aus Checkboxen
-    enabled_tests: set[str] = set()
-    for i, test_name in enumerate(ALL_TEST_NAMES):
-        if i < len(test_toggles) and test_toggles[i]:
-            enabled_tests.add(test_name)
+    # test_controls = [N Enable-Checkboxen] + [N Gewicht-Slider] (per Anzahl gesplittet)
+    n = len(_UI_TEST_ORDER)
+    enables = test_controls[:n]
+    weights = test_controls[n:2 * n]
+    enabled_tests = {
+        name for i, name in enumerate(_UI_TEST_ORDER) if i < len(enables) and enables[i]
+    }
+    custom_weights = {
+        name: float(weights[i]) for i, name in enumerate(_UI_TEST_ORDER) if i < len(weights)
+    }
 
-    disabled = set(ALL_TEST_NAMES) - enabled_tests
+    disabled = set(_UI_TEST_ORDER) - enabled_tests
     if disabled:
         log(f"⏭️ Deaktivierte Tests: {', '.join(sorted(disabled))}")
+    non_default_w = {k: v for k, v in custom_weights.items() if abs(v - WEIGHTS.get(k, v)) > 1e-9}
+    if non_default_w:
+        log(f"⚖️ Angepasste Gewichte: {', '.join(f'{k}={v}' for k, v in non_default_w.items())}")
 
     config_dict = {
         "zscore_threshold":    zscore_threshold,
@@ -290,8 +304,10 @@ def analyze_file(
         "output_threshold":    output_threshold,
         "doppelte_beleg_prefix_ignore": prefix_ignore.strip() if prefix_ignore else "",
         "text_konto_threshold": text_konto_threshold,
-        "text_konto_konto_min": int(text_konto_konto_min),
-        "text_konto_konto_max": int(text_konto_konto_max),
+        "custom_weights":      custom_weights,
+        "konto_filter_enabled": not bool(konto_filter_all),
+        "konto_filter_min":    int(konto_filter_min),
+        "konto_filter_max":    int(konto_filter_max),
     }
 
     # ── Lokaler Fallback-Modus ────────────────────────────────
@@ -508,6 +524,37 @@ def save_feedback(session: dict, table_data: pd.DataFrame, pruefer: str) -> str:
     mandant_id = session.get("mandant_id", "unknown")
     total = _feedback_store.count(mandant_id)
     return f"✅ {saved} Labels gespeichert. Gesamt für Mandant {mandant_id}: {total}"
+
+
+# ══════════════════════════════════════════════════════════════
+# GEWICHTS-HANDLER (Reset + gelernte Gewichte laden)
+# ══════════════════════════════════════════════════════════════
+
+def reset_weights():
+    """Setzt alle Checkboxen auf an und alle Gewicht-Slider auf die Defaults."""
+    enables = [gr.update(value=True) for _ in _UI_TEST_ORDER]
+    sliders = [gr.update(value=float(WEIGHTS.get(name, 1.0))) for name in _UI_TEST_ORDER]
+    return enables + sliders + ["↺ Auf Default-Gewichte zurückgesetzt."]
+
+
+def load_learned_weights():
+    """Lädt die vom Feedback-Trainer gelernten Gewichte in die Slider (#trainer-wiring)."""
+    try:
+        learned = ScoreReweighter(_feedback_store).train(mandant_id=None)
+    except TrainingLocked as exc:
+        # Slider unverändert lassen (No-op-Updates), nur Status melden
+        return [gr.update() for _ in _UI_TEST_ORDER] + [f"🔒 {exc}"]
+    except Exception as exc:  # noqa: BLE001 — Status statt Crash im UI
+        return [gr.update() for _ in _UI_TEST_ORDER] + [f"⚠️ Fehler: {exc}"]
+
+    sliders = [
+        gr.update(value=round(float(learned.get(name, WEIGHTS.get(name, 1.0))), 2))
+        for name in _UI_TEST_ORDER
+    ]
+    changed = {k: round(v, 2) for k, v in learned.items() if abs(v - WEIGHTS.get(k, v)) > 1e-9}
+    msg = ("🎓 Gelernte Gewichte geladen. Angepasst: "
+           + (", ".join(f"{k}={v}" for k, v in changed.items()) if changed else "keine Abweichung"))
+    return sliders + [msg]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -799,40 +846,69 @@ with gr.Blocks(
                 label="TEXT_KONTO_MATCH Threshold (Cosine-Similarity)",
                 info="Buchungstext ↔ Kontobezeichnung: unter diesem Wert → Anomalie (Standard: 0.30)",
             )
+        gr.Markdown(
+            "**Konten-Bereich (global, gilt für ALLE Tests)** — Default GuV "
+            "(Ertrag 40000–59999 + Aufwand 60000–79999). Bestandskonten (<40000) und "
+            "Kostenrechnung (≥80000) sind kein Prüfziel."
+        )
         with gr.Row():
-            text_konto_min_input = gr.Number(
-                value=40000, minimum=0, maximum=99999, precision=0,
-                label="Sachkonto Min (inkl.)",
-                info="Untergrenze konto_soll für TEXT_KONTO_MATCH (Standard: 40000)",
+            konto_filter_all = gr.Checkbox(
+                value=False, label="Alle Konten einbeziehen",
+                info="Hebt die Bereichsgrenze für ALLE Tests auf (auch Bestand/Kostenrechnung).",
             )
-            text_konto_max_input = gr.Number(
-                value=80000, minimum=0, maximum=99999, precision=0,
-                label="Sachkonto Max (exkl.)",
-                info="Obergrenze konto_soll, exklusiv (Standard: 80000 → prüft bis 79999)",
+            konto_filter_min = gr.Number(
+                value=40000, minimum=0, maximum=99999999, precision=0,
+                label="Konto von (inkl.)",
+                info="Untergrenze konto_soll — gilt für alle Tests.",
+            )
+            konto_filter_max = gr.Number(
+                value=80000, minimum=1, maximum=99999999, precision=0,
+                label="Konto bis (exkl.)",
+                info="Obergrenze konto_soll, exklusiv (80000 → bis 79999).",
             )
 
     # ── Test-Konfiguration (15 Checkboxen) ────────────────────
     # WHY(#12): Info-Texte für experimentelle/erklärungsbedürftige Tests.
     _TEST_INFO = {
         "ISOLATION_ANOMALIE": (
-            "⚗️ Experimentell (Isolation Forest). Erst ab ~5.000 Buchungen sinnvoll "
+            "⚗️ Experimentell (Isolation Forest). Erst ab ~1.000 Buchungen sinnvoll "
             "(darunter → 0 Treffer + Warnung). Kann False Positives erzeugen. Muss "
             "zusätzlich in der Config aktiviert werden (isolation_enabled) — die "
             "Checkbox allein startet den Test nicht."
         ),
         "TEXT_KONTO_MATCH": (
-            "Vergleicht Buchungstext ↔ Kontobezeichnung (Embeddings). Prüft nur "
-            "Sachkonten 40000–79999; ohne sentence-transformers wird er übersprungen."
+            "Vergleicht Buchungstext ↔ Kontobezeichnung (Embeddings). Konto-Bereich "
+            "kommt aus dem globalen Filter; ohne sentence-transformers übersprungen."
         ),
     }
     test_checkboxes: list[gr.Checkbox] = []
-    with gr.Accordion("🔧 Test-Konfiguration", open=False):
-        gr.Markdown("Tests an-/abschalten. Blockierte Tests werden nach dem Datei-Upload automatisch deaktiviert.")
+    weight_sliders: list[gr.Slider] = []
+    with gr.Accordion("🔧 Test-Konfiguration & Gewichte", open=False):
+        gr.Markdown(
+            "Pro Test: **An/Aus** (läuft / läuft nicht — spart Rechenzeit) + **Gewicht** "
+            "(Beitrag zum Score, 0.1–5.0). **★** = kritisch (immer im Output). "
+            "Blockierte Tests werden nach dem Datei-Upload automatisch deaktiviert."
+        )
         for category, test_names in TEST_CATEGORIES.items():
-            with gr.Row():
-                for test_name in test_names:
-                    cb = gr.Checkbox(label=test_name, value=True, info=_TEST_INFO.get(test_name))
-                    test_checkboxes.append(cb)
+            gr.Markdown(f"**{category}**")
+            for test_name in test_names:
+                star = " ★" if test_name in CRITICAL_FLAGS else ""
+                with gr.Row():
+                    cb = gr.Checkbox(
+                        label=f"{test_name}{star}", value=True,
+                        info=_TEST_INFO.get(test_name), scale=3,
+                    )
+                    sl = gr.Slider(
+                        minimum=0.1, maximum=5.0, step=0.1,
+                        value=float(WEIGHTS.get(test_name, 1.0)),
+                        label="Gewicht", scale=2,
+                    )
+                test_checkboxes.append(cb)
+                weight_sliders.append(sl)
+        with gr.Row():
+            weights_reset_btn = gr.Button("↺ Gewichte/Auswahl auf Defaults", size="sm")
+            weights_learn_btn = gr.Button("🎓 Gelernte Gewichte laden", size="sm")
+        weights_status = gr.Textbox(label="Gewichts-Status", interactive=False, lines=1)
 
     with gr.Row():
         analyze_btn = gr.Button("▶️ Analyse starten", variant="primary", size="lg")
@@ -995,9 +1071,9 @@ with gr.Blocks(
             zscore_slider, iqr_slider, near_dup_slider, threshold_slider,
             prefix_ignore_input,
             text_konto_slider,
-            text_konto_min_input,
-            text_konto_max_input,
+            konto_filter_all, konto_filter_min, konto_filter_max,
             *test_checkboxes,
+            *weight_sliders,
         ],
         outputs=[
             summary_output, logs_output, table_output, export_file, session_state,
@@ -1008,6 +1084,18 @@ with gr.Blocks(
         fn=cancel_analysis,
         inputs=[session_state],
         outputs=[summary_output],
+    )
+
+    # ── Events: Gewichte zurücksetzen / gelernte laden ────────
+    weights_reset_btn.click(
+        fn=reset_weights,
+        inputs=[],
+        outputs=test_checkboxes + weight_sliders + [weights_status],
+    )
+    weights_learn_btn.click(
+        fn=load_learned_weights,
+        inputs=[],
+        outputs=weight_sliders + [weights_status],
     )
 
     # ── Event: Feedback speichern ─────────────────────────────

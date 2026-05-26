@@ -97,7 +97,7 @@ flowchart LR
     end
     subgraph EX["Experimentell / Embedding"]
       F1["ISOLATION_ANOMALIE 1.5 default off"]
-      F2["TEXT_KONTO_MATCH 2.0 Konto 40000-79999"]
+      F2["TEXT_KONTO_MATCH 2.0"]
     end
     BE --> S["Summe = MAX_POSSIBLE_SCORE 27.0"]
     DU --> S
@@ -142,6 +142,32 @@ und teilt jeden Test ein:
 Beispiel `RECHNUNGSDATUM_PERIODE`: braucht `erfassungsdatum` **oder** `buchungsperiode`
 (`required_any`). Fehlen beide (typisch im Diamant-Export), wird der Test **blockiert**
 statt still 0 Treffer zu liefern.
+
+---
+
+## 4b. Globaler Konto-Bereichsfilter (GuV)
+
+Die Anomalie-Erkennung zielt fachlich auf **GuV-Konten**: Ertrag (40000–59999) +
+Aufwand (60000–79999). Bestandskonten (< 40000, Bilanz) und Kostenrechnung
+(≥ 80000, intern) sind kein Prüfziel — dort sind z. B. Z-Score/IQR auf Beträgen
+sinnlos (technische Umbuchungen, keine Geschäftsvorfälle).
+
+Deshalb gibt es **einen** Konto-Bereichsfilter, der für **alle 15 Tests gleich** gilt
+(`konto_filter_min`/`konto_filter_max`, Default 40000–79999; `konto_filter_enabled=False`
+= alle Konten). Implementiert als Maske `_konto_in_scope` in `_prepare`:
+konto-bewusste Tests (Betrag, MONATS, LEERER, TEXT_KONTO) lesen sie direkt, und in
+`_compute_scores` werden Flags außerhalb des Bereichs zentral genullt — so wirkt der
+Filter einheitlich auf jeden Test (die Detektion behält dabei den Cross-Konto-Kontext,
+z. B. für Duplikate). Früher war das inkonsistent (Betrag hardcoded, TEXT_KONTO separat,
+Rest gar nicht) — jetzt eine Wahrheit, in der UI einstellbar.
+
+## 4c. Gewichte in der UI anpassen
+
+Pro Test lassen sich in der UI **An/Aus** (läuft / läuft nicht) und das **Gewicht**
+(0.1–5.0) einstellen. Die Gewichte gehen als `config.custom_weights` direkt in
+`_compute_scores` ein (überschreiben die Defaults für den Lauf). Ein Button lädt die
+vom Feedback-Trainer gelernten Gewichte (`ScoreReweighter`, ab 500 Labels) in die
+Slider, ein anderer setzt auf die Defaults zurück.
 
 ---
 
