@@ -75,3 +75,38 @@ def test_dynamic_chart_persists_fig_in_session(app_local, tmp_path):
     fig, _warn, sess = app_local._build_dynamic_chart(s, "Scatter", "betrag", "_score", None, "(keine)", "(keine)")
     assert sess is s
     assert s["dynamic_fig"] is not None
+
+
+def test_isolation_checkbox_is_the_only_switch(app_local, tmp_path):
+    """Ankreuzen von ISOLATION_ANOMALIE startet den Test — kein versteckter
+    zweiter isolation_enabled-Gate, der die Checkbox aushebelt."""
+    from src.tests.isolation_anomaly import HAS_SKLEARN
+    if not HAS_SKLEARN:
+        pytest.skip("scikit-learn nicht verfügbar")
+
+    n = 1100  # ≥ isolation_min_bookings (1000)
+    betrag = ["100"] * (n - 20) + ["50000"] * 20  # klare Ausreißer
+    df = pd.DataFrame({
+        "datum": ["2024-01-15"] * n,
+        "betrag": betrag,
+        "konto_soll": ["42000"] * n,                 # GuV → im Default-Scope
+        "buchungstext": ["Buchung"] * n,
+        "belegnummer": [str(i) for i in range(n)],
+        "kreditor": ["X"] * n,
+    })
+    csv = tmp_path / "big.csv"
+    df.to_csv(csv, index=False, sep=";", encoding="utf-8")
+
+    order = app_local._UI_TEST_ORDER
+    n_tests = len(order)
+    # Default-Filter (GuV), nur ISOLATION ankreuzen (single switch)
+    defaults = ("", 2.5, 1.5, 3, 2.0, "", 0.3, False, 40000, 80000)
+    enables = [name == "ISOLATION_ANOMALIE" for name in order]
+    controls = enables + [2.0] * n_tests
+
+    s = app_local._new_session()
+    for _ in app_local.analyze_file(s, str(csv), *defaults, *controls):
+        pass
+    fc = s["result"]["statistics"]["flag_counts"]
+    # Checkbox an → Test lief und flaggte (gated wäre 0)
+    assert fc["ISOLATION_ANOMALIE"] > 0

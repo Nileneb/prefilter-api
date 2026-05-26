@@ -98,6 +98,10 @@ _feedback_store = FeedbackStore()
 # mappten auf den falschen Test. Eine Quelle für Controls UND Mapping.
 _UI_TEST_ORDER: list[str] = [name for names in TEST_CATEGORIES.values() for name in names]
 
+# Tests, deren Checkbox standardmäßig AUS ist (experimentell). Die Checkbox ist der
+# EINZIGE Schalter — kein versteckter zweiter Config-Gate mehr (s. analyze_file).
+_DEFAULT_OFF_TESTS: set[str] = {"ISOLATION_ANOMALIE"}
+
 
 # ══════════════════════════════════════════════════════════════
 # LIVE-LOG HELPER
@@ -225,9 +229,9 @@ def validate_file(file):
     v = validate_columns(df)
     report = format_validation_report(v)
 
-    # Checkbox-States: blockierte Tests ausschalten (kanonische UI-Reihenfolge)
+    # Checkbox-States: blockierte + standardmäßig-aus Tests ausschalten (kanonische Reihenfolge)
     checkbox_updates = [
-        gr.update(value=test_name not in v.tests_blocked)
+        gr.update(value=(test_name not in v.tests_blocked) and (test_name not in _DEFAULT_OFF_TESTS))
         for test_name in _UI_TEST_ORDER
     ]
     return [gr.update(value=report)] + checkbox_updates
@@ -293,6 +297,9 @@ def analyze_file(
     disabled = set(_UI_TEST_ORDER) - enabled_tests
     if disabled:
         log(f"⏭️ Deaktivierte Tests: {', '.join(sorted(disabled))}")
+    # Die Checkbox ist der EINZIGE Schalter: ankreuzen → Test läuft (kein separater
+    # isolation_enabled-Gate mehr, der die Checkbox aushebelt).
+    isolation_on = "ISOLATION_ANOMALIE" in enabled_tests
     non_default_w = {k: v for k, v in custom_weights.items() if abs(v - WEIGHTS.get(k, v)) > 1e-9}
     if non_default_w:
         log(f"⚖️ Angepasste Gewichte: {', '.join(f'{k}={v}' for k, v in non_default_w.items())}")
@@ -308,6 +315,7 @@ def analyze_file(
         "konto_filter_enabled": not bool(konto_filter_all),
         "konto_filter_min":    int(konto_filter_min),
         "konto_filter_max":    int(konto_filter_max),
+        "isolation_enabled":   isolation_on,
     }
 
     # ── Lokaler Fallback-Modus ────────────────────────────────
@@ -531,10 +539,10 @@ def save_feedback(session: dict, table_data: pd.DataFrame, pruefer: str) -> str:
 # ══════════════════════════════════════════════════════════════
 
 def reset_weights():
-    """Setzt alle Checkboxen auf an und alle Gewicht-Slider auf die Defaults."""
-    enables = [gr.update(value=True) for _ in _UI_TEST_ORDER]
+    """Setzt Checkboxen auf Default-Auswahl (experimentelle aus) und Slider auf Default-Gewichte."""
+    enables = [gr.update(value=name not in _DEFAULT_OFF_TESTS) for name in _UI_TEST_ORDER]
     sliders = [gr.update(value=float(WEIGHTS.get(name, 1.0))) for name in _UI_TEST_ORDER]
-    return enables + sliders + ["↺ Auf Default-Gewichte zurückgesetzt."]
+    return enables + sliders + ["↺ Auf Default-Auswahl und -Gewichte zurückgesetzt."]
 
 
 def load_learned_weights():
@@ -871,10 +879,9 @@ with gr.Blocks(
     # WHY(#12): Info-Texte für experimentelle/erklärungsbedürftige Tests.
     _TEST_INFO = {
         "ISOLATION_ANOMALIE": (
-            "⚗️ Experimentell (Isolation Forest). Erst ab ~1.000 Buchungen sinnvoll "
-            "(darunter → 0 Treffer + Warnung). Kann False Positives erzeugen. Muss "
-            "zusätzlich in der Config aktiviert werden (isolation_enabled) — die "
-            "Checkbox allein startet den Test nicht."
+            "⚗️ Experimentell (Isolation Forest), standardmäßig aus. Ankreuzen "
+            "aktiviert ihn. Erst ab ~1.000 Buchungen sinnvoll (darunter → 0 Treffer "
+            "+ Warnung), kann False Positives erzeugen."
         ),
         "TEXT_KONTO_MATCH": (
             "Vergleicht Buchungstext ↔ Kontobezeichnung (Embeddings). Konto-Bereich "
@@ -895,7 +902,8 @@ with gr.Blocks(
                 star = " ★" if test_name in CRITICAL_FLAGS else ""
                 with gr.Row():
                     cb = gr.Checkbox(
-                        label=f"{test_name}{star}", value=True,
+                        label=f"{test_name}{star}",
+                        value=test_name not in _DEFAULT_OFF_TESTS,
                         info=_TEST_INFO.get(test_name), scale=3,
                     )
                     sl = gr.Slider(

@@ -334,9 +334,9 @@ gelernten Gewichte laden. Details: [`docs/BERECHNUNG.md`](docs/BERECHNUNG.md) §
 ### ISOLATION_ANOMALIE — experimentell (Test #14)
 
 Statistischer Catch-All via Isolation Forest auf einem Feature-Vektor (log-Betrag,
-Datum-Zyklik, erste 10 Embedding-Dimensionen). **Per Default deaktiviert.** Zwei
-Schalter müssen zusammenpassen: die UI-Checkbox **und** `isolation_enabled=True`
-in der Config — die Checkbox allein startet den Test nicht.
+Datum-Zyklik, erste 10 Embedding-Dimensionen). **Checkbox standardmäßig aus.** Die
+UI-Checkbox ist der **einzige** Schalter: Ankreuzen aktiviert den Test (die UI setzt
+`isolation_enabled` entsprechend) — kein zweiter, versteckter Config-Schalter.
 
 - **Wann sinnvoll?** Erst ab **~1.000 Buchungen** (`isolation_min_bookings`, Default
   1000). Darunter liefert der Test **0 Treffer + Warnung**, da zu wenig Daten für
