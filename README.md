@@ -301,7 +301,7 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 
 ---
 
-## Anomalie-Tests (14 Stück)
+## Anomalie-Tests (15 Stück)
 
 | #  | Flag                      | Gewicht | Kritisch | Beschreibung                                                               |
 | -- | ------------------------- | ------- | -------- | -------------------------------------------------------------------------- |
@@ -319,8 +319,24 @@ Nach der Analyse wird das komplette Ergebnis-JSON per `POST` an die konfiguriert
 | 12 | `MONATS_ENTWICKLUNG`      | 1.5     |          | Monatssumme weicht > 3.0σ vom Konto-Durchschnitt ab (Z-Score)                 |
 | 13 | `FEHLENDE_MONATSBUCHUNG`  | 1.0     |          | Konto hat regulär monatliche Buchungen, fehlt aber in einem Monat         |
 | 14 | `ISOLATION_ANOMALIE`      | 1.5     |          | Isolation-Forest Catch-All (experimentell, default deaktiviert)           |
+| 15 | `TEXT_KONTO_MATCH`        | 2.0     |          | Buchungstext passt nicht zur Kontobezeichnung (Embeddings, Sachkonto 40000–79999) |
 
 **Kritische Flags** führen dazu, dass die Buchung **immer** im Output erscheint, unabhängig vom Score-Schwellenwert.
+
+### ISOLATION_ANOMALIE — experimentell (Test #14)
+
+Statistischer Catch-All via Isolation Forest auf einem Feature-Vektor (log-Betrag,
+Datum-Zyklik, erste 10 Embedding-Dimensionen). **Per Default deaktiviert.** Zwei
+Schalter müssen zusammenpassen: die UI-Checkbox **und** `isolation_enabled=True`
+in der Config — die Checkbox allein startet den Test nicht.
+
+- **Wann sinnvoll?** Erst ab **~5.000 Buchungen** (`isolation_min_bookings`, Default
+  5000). Darunter liefert der Test **0 Treffer + Warnung**, da zu wenig Daten für
+  zuverlässige Anomalien.
+- **`isolation_contamination`** (Default 0.02 = 2%): erwarteter Anomalie-Anteil.
+  Höher → mehr Treffer (mehr False Positives), niedriger → konservativer.
+- **Performance:** auf großen Datensätzen (>100k Zeilen) spürbar langsamer als die
+  übrigen Tests; benötigt scikit-learn (+ sentence-transformers für Text-Features).
 
 ### Scoring
 

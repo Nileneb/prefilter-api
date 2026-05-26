@@ -128,6 +128,10 @@ class AnalysisConfig(BaseModel):
         0.02, ge=0.001, le=0.5,
         description="Erwarteter Anomalie-Anteil für Isolation Forest (Standard: 0.02 = 2%)",
     )
+    isolation_min_bookings: int = Field(
+        5000, ge=50,
+        description="Mindestanzahl Buchungen für ISOLATION_ANOMALIE — darunter zu unzuverlässig (Standard: 5000). Sonst 0 + Warnung.",
+    )
 
     # ── Text-Konto-Match ─────────────────────────────────────────────────────
     text_konto_threshold: float = Field(

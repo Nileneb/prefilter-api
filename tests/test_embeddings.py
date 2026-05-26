@@ -231,7 +231,10 @@ class TestIsolationAnomalie:
             buchungstext=[f"Buchung {i}" for i in range(n)],
             belegnummer=[f"B{i:04d}" for i in range(n)],
         )
-        config = AnalysisConfig(isolation_enabled=True, isolation_contamination=0.05)
+        config = AnalysisConfig(
+            isolation_enabled=True, isolation_contamination=0.05,
+            isolation_min_bookings=50,  # Forest-Mechanik mit 100 Zeilen testen (#12)
+        )
         engine = AnomalyEngine(df, config=config)
         engine._stats_cache = engine._compute_stats()
         engine._t27_isolation_anomalie()
@@ -242,11 +245,11 @@ class TestIsolationAnomalie:
 
     @pytest.mark.skipif(not HAS_SKLEARN, reason="scikit-learn nicht installiert")
     def test_too_few_rows(self):
-        """Bei < 50 Buchungen wird Isolation Forest übersprungen."""
+        """Bei < min_bookings Buchungen wird Isolation Forest übersprungen."""
         df = _make_df(
             betrag=[f"{i * 100},00" for i in range(1, 11)],
         )
-        config = AnalysisConfig(isolation_enabled=True)
+        config = AnalysisConfig(isolation_enabled=True, isolation_min_bookings=50)
         engine = AnomalyEngine(df, config=config)
         engine._stats_cache = engine._compute_stats()
         engine._t27_isolation_anomalie()

@@ -811,14 +811,27 @@ with gr.Blocks(
                 info="Obergrenze konto_soll, exklusiv (Standard: 80000 → prüft bis 79999)",
             )
 
-    # ── Test-Konfiguration (14 Checkboxen) ────────────────────
+    # ── Test-Konfiguration (15 Checkboxen) ────────────────────
+    # WHY(#12): Info-Texte für experimentelle/erklärungsbedürftige Tests.
+    _TEST_INFO = {
+        "ISOLATION_ANOMALIE": (
+            "⚗️ Experimentell (Isolation Forest). Erst ab ~5.000 Buchungen sinnvoll "
+            "(darunter → 0 Treffer + Warnung). Kann False Positives erzeugen. Muss "
+            "zusätzlich in der Config aktiviert werden (isolation_enabled) — die "
+            "Checkbox allein startet den Test nicht."
+        ),
+        "TEXT_KONTO_MATCH": (
+            "Vergleicht Buchungstext ↔ Kontobezeichnung (Embeddings). Prüft nur "
+            "Sachkonten 40000–79999; ohne sentence-transformers wird er übersprungen."
+        ),
+    }
     test_checkboxes: list[gr.Checkbox] = []
     with gr.Accordion("🔧 Test-Konfiguration", open=False):
         gr.Markdown("Tests an-/abschalten. Blockierte Tests werden nach dem Datei-Upload automatisch deaktiviert.")
         for category, test_names in TEST_CATEGORIES.items():
             with gr.Row():
                 for test_name in test_names:
-                    cb = gr.Checkbox(label=test_name, value=True)
+                    cb = gr.Checkbox(label=test_name, value=True, info=_TEST_INFO.get(test_name))
                     test_checkboxes.append(cb)
 
     with gr.Row():

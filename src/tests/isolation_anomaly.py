@@ -46,8 +46,12 @@ class IsolationAnomalie(AnomalyTest):
         valid = (~is_storno) & (df["_abs"] > 0)
         n_valid = int(valid.sum())
 
-        if n_valid < 50:
-            self.log("Zu wenig Daten", n_valid=n_valid)
+        # WHY(#12): Isolation Forest braucht eine Mindestmenge, sonst zu viele
+        # False Positives. Unterhalb → 0 + klare Warnung statt unzuverlässiger Treffer.
+        min_bookings = getattr(config, "isolation_min_bookings", 5000)
+        if n_valid < min_bookings:
+            self.log("Zu wenig Daten für zuverlässige Isolation-Forest-Anomalien",
+                     n_valid=n_valid, min_bookings=min_bookings)
             return 0
 
         # Feature-Matrix bauen
