@@ -43,6 +43,12 @@ TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
 
 ALL_TEST_NAMES: list[str] = list(TEST_REQUIREMENTS.keys())
 
+# WHY: Im Diamant-Buchungszeilen-Modell sind soll_haben/konto_haben erwartbar
+# abwesend (Gegenseite = eigene Zeile je DVBeleg). Ihr Fehlen darf einen Test
+# nicht als "eingeschränkt" markieren — die Engine fällt sauber zurück (signierter
+# Betrag + Beleg-Paar-Heuristik). Andere fehlende Optionals bleiben echte Hinweise.
+_MODEL_OPTIONAL: set[str] = {"soll_haben", "konto_haben"}
+
 # UI-Kategorien für die Checkbox-Gruppierung
 TEST_CATEGORIES: dict[str, list[str]] = {
     "Betrags-Tests": ["BETRAG_ZSCORE", "BETRAG_IQR", "KONTO_BETRAG_ANOMALIE"],
@@ -73,7 +79,8 @@ class ValidationResult:
     tests_ok: list[str] = field(default_factory=list)
     tests_blocked: dict[str, str] = field(default_factory=dict)     # test -> reason
     tests_degraded: dict[str, str] = field(default_factory=dict)    # test -> reason
-    warnings: list[str] = field(default_factory=list)               # Allgemeine Warnungen
+    warnings: list[str] = field(default_factory=list)               # Echte Qualitätsprobleme (⚠️)
+    infos: list[str] = field(default_factory=list)                  # Erwartbare Modell-Eigenschaften (ℹ️)
 
 
 def validate_columns(df: pd.DataFrame) -> ValidationResult:
@@ -113,7 +120,12 @@ def validate_columns(df: pd.DataFrame) -> ValidationResult:
             fill_rates.get(c, 0.0) > 0.0 for c in required_any
         )
         sparse_cols = [c for c in required if 0 < fill_rates.get(c, 0.0) < 50.0]
-        empty_opt = [c for c in optional if fill_rates.get(c, 0.0) == 0.0]
+        # Modellbedingt-abwesende Optionals (soll_haben/konto_haben) NICHT als
+        # Degradierung werten — die Engine degradiert dafür sauber.
+        empty_opt = [
+            c for c in optional
+            if fill_rates.get(c, 0.0) == 0.0 and c not in _MODEL_OPTIONAL
+        ]
 
         if blocked_cols:
             result.tests_blocked[test_name] = ", ".join(blocked_cols) + " leer"
@@ -131,24 +143,44 @@ def validate_columns(df: pd.DataFrame) -> ValidationResult:
         else:
             result.tests_ok.append(test_name)
 
-    # ── Allgemeine Warnungen ──────────────────────────────────────
+    # ── Hinweise: Diamant-Modell vs. echte Probleme ───────────────
+    # WHY: Diamant exportiert Buchungszeilen (je Zeile EIN Konto, Gegenseite =
+    # andere Zeile desselben DVBelegs). Das Fehlen eines Gegenkonto-Spalte bzw.
+    # einer separaten Soll/Haben-Spalte ist KEIN Defekt, sondern das Modell —
+    # darf also nicht als ⚠️ "eingeschränkt" alarmieren (sonst unlogisch).
+    betrag_signed = False
+    if "betrag" in df.columns:
+        from src.parser import parse_german_number_series
+        _vals = parse_german_number_series(df["betrag"])
+        betrag_signed = bool((_vals < 0).any())
+
     sh_rate = _col_fill_rate(df, "soll_haben")
     if sh_rate == 0.0:
-        result.warnings.append(
-            "soll_haben fehlt → Ertrag/Aufwand-Vorzeichen nicht betriebswirtschaftlich "
-            "korrekt, Fallback auf Original-Vorzeichen"
-        )
+        if betrag_signed:
+            result.infos.append(
+                "Keine separate soll_haben-Spalte — Vorzeichen kommt aus dem signierten "
+                "Betrag (Diamant-Standard). Kein Qualitätsproblem."
+            )
+        else:
+            result.warnings.append(
+                "soll_haben fehlt UND Betrag ist unsigniert → Soll/Haben-Richtung unbekannt, "
+                "Ertrag/Aufwand-Vorzeichen ggf. ungenau."
+            )
     elif sh_rate < 50.0:
         result.warnings.append(
             f"soll_haben nur {sh_rate:.0f}% befüllt → Vorzeichen-Berechnung teilweise ungenau"
         )
 
     kh_rate = _col_fill_rate(df, "konto_haben")
-    if kh_rate < 50.0:
-        pct = 100.0 - kh_rate
+    if kh_rate == 0.0:
+        result.infos.append(
+            "Kein Gegenkonto je Zeile — entspricht dem Diamant-Buchungszeilen-Modell "
+            "(Soll/Haben sind getrennte Zeilen je DVBeleg). Gegenseite wird über das "
+            "Beleg-Paar ermittelt. Kein Test benötigt konto_haben direkt."
+        )
+    elif kh_rate < 50.0:
         result.warnings.append(
-            f"Gegenkonto (konto_haben) fehlt in {pct:.0f}% der Zeilen → "
-            f"einige Tests eingeschränkt, Beleg-Paar-Heuristik aktiv"
+            f"konto_haben nur teilweise befüllt ({kh_rate:.0f}%) → uneinheitliche Belegstruktur."
         )
 
     return result
@@ -189,5 +221,11 @@ def format_validation_report(v: ValidationResult) -> str:
         lines.append("Hinweise:")
         for w in v.warnings:
             lines.append(f"  ⚠️ {w}")
+
+    if v.infos:
+        lines.append("")
+        lines.append("Info (erwartetes Datenmodell):")
+        for inf in v.infos:
+            lines.append(f"  ℹ️ {inf}")
 
     return "\n".join(lines)
