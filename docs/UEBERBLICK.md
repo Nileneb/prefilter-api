@@ -95,6 +95,57 @@ Wenn genug Bewertungen da sind (500), kann die App die **Punkte (Gewichte)
 nachjustieren**: Detektive, die oft danebenliegen, bekommen weniger Gewicht;
 zuverlässige mehr. Du kannst die Gewichte auch **selbst per Schieberegler** setzen.
 
+## Spezialfall: Der Isolation Forest (und warum Regeln oft besser sind)
+
+Der 15. Detektiv `ISOLATION_ANOMALIE` arbeitet anders als die anderen 14. Er ist
+eine **KI**, die nicht weiß, was „falsch" heißt — er sucht nur das **statistisch
+Ungewöhnliche**.
+
+**Wie er funktioniert (Bild):** Stell dir vor, du sollst in einer Menschenmenge die
+„komischen" Leute finden, ohne zu wissen, was komisch ist. Du ziehst **zufällige
+Trennlinien** („alle über 1,90 m nach links") und schaust, wer nach **ganz wenigen
+Schnitten allein** dasteht. Eine Person mit Hut, grünen Haaren und Einrad ist schnell
+isoliert — eine Durchschnittsperson erst nach vielen Schnitten. **Schnell isoliert =
+verdächtig.** Genau das macht der Algorithmus mit vielen Zufallsbäumen, hier auf den
+Merkmalen Betragshöhe, Tag-im-Monat, Wochentag und KI-Textmerkmalen.
+
+**Die naheliegende These:** „Alle anderen Tests könnte man auch mit normaler
+SQL-Datenbank bauen — also ist der Isolation Forest die eigentlich wichtige Methode."
+Das ist verständlich gedacht, aber **falsch herum**:
+
+- **„In SQL machbar" heißt nicht „schlechter".** Die wirksamsten Indikatoren in der
+  Buchhaltung sind gerade die „langweiligen" Regeln, weil sie **Fachwissen** kodieren
+  — *so* entstehen Fehler: doppelte Zahlung, neuer Lieferant + sofort hoher Betrag,
+  Periodenverschiebung. Diese Treffer sind präzise und **erklärbar**.
+- **Betrug ist oft KEIN Ausreißer.** Eine clever doppelt gebuchte Rechnung sieht
+  *völlig normal* aus (gleicher Betrag, gleicher Lieferant) → der Forest übersieht sie,
+  die Regel `BELEG_KREDITOR_DUPLIKAT` fängt sie. Eine ganze Fehlerklasse ist für den
+  Forest **strukturell unsichtbar**.
+- **Feste Quote statt Sinn.** Der Forest markiert immer einen festen Anteil (~2 %) als
+  „Anomalie" — auch auf sauberen Daten. Die einmalige Jahres-Versicherung ist
+  „statistisch selten", aber völlig korrekt → **Fehlalarm**.
+- **Nicht erklärbar.** Er sagt „komisch", aber nicht *warum*. Damit kann ein Prüfer
+  wenig anfangen. Außerdem braucht er viel Daten (deshalb der ≥1.000-Buchungen-Riegel)
+  und Feintuning.
+
+**Die ehrliche Einordnung — es ist kein Entweder-oder:**
+
+| | Regeln (die 14) | Isolation Forest |
+| --- | --- | --- |
+| Findet | **bekannte** Fehlermuster | **unbekannte** Kombinationen |
+| Präzision | hoch, erklärbar | niedrig, viele Fehlalarme |
+| Fachwissen | eingebaut | keins |
+| Doppelte Zahlungen | ✅ fängt sie | ❌ übersieht sie oft |
+
+Die **Regeln sind das Arbeitspferd**, der Forest ein optionales **Zusatznetz** für
+„etwas, an das niemand gedacht hat". Genau deshalb: 14 gezielte Tests + 1 Catch-all,
+der standardmäßig **aus** ist.
+
+> Kleine Korrektur zum „alles geht mit SQL": Zwei Tests (`NEAR_DUPLICATE`,
+> `TEXT_KONTO_MATCH`) sind **kein** reines SQL — sie nutzen dieselbe KI-Vektor-Technik
+> (Embeddings) wie der Forest, um *Bedeutung* von Texten zu vergleichen. Die echte
+> Trennlinie ist „Fachregeln + gezielte KI" gegen „blinder statistischer Catch-all".
+
 ## Die Knöpfe und Tabs in der App
 
 - **Datei hochladen** + (optional) **Webhook-URL** (Ergebnis automatisch weiterschicken).
