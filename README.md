@@ -4,6 +4,18 @@ Gradio-Web-App, die CSV-/XLS-/XLSX-Dateien mit Buchungsdaten (inkl. Diamant-Expo
 
 > **Version:** Single source of truth ist `src/__init__.py` (`__version__`); `pyproject.toml` spiegelt sie, `tests/test_version.py` erzwingt Gleichheit.
 
+## 🧒 Wie funktioniert das? (einfach erklärt)
+
+Kurz: Die App liest **tausende Buchungen** und klebt nur auf die wenigen
+„komisch aussehenden" einen Zettel — damit ein Prüfer nur diese anschauen muss
+statt alles. **15 „Detektive" (Tests)** prüfen je eine Sache; jeder Treffer gibt
+**Punkte (Score)**; Buchungen mit genug Punkten kommen oben auf den Prüf-Stapel.
+Die App entscheidet nichts selbst — ein Mensch prüft am Ende.
+
+👉 Ausführliche, einfache Erklärung aller Funktionen + Ablauf:
+**[`docs/UEBERBLICK.md`](docs/UEBERBLICK.md)**. Rechen-Details + Gewichte:
+**[`docs/BERECHNUNG.md`](docs/BERECHNUNG.md)**.
+
 ### v7.0 — Consistency, Soll/Haben & Feedback-Loop
 
 - **VELOCITY_ANOMALIE entfernt**: Letztes Vestiges aus models.py und CSV bereinigt. ISOLATION_ANOMALIE nun in Validator registriert (TEST_REQUIREMENTS + TEST_CATEGORIES).
