@@ -14,6 +14,8 @@ Public API:
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 from src.logging_config import get_logger
@@ -28,7 +30,9 @@ except ImportError:
     HAS_EMBEDDINGS = False
     logger.info("sentence-transformers nicht installiert — Embedding-Features deaktiviert")
 
-_MODEL_NAME = "all-MiniLM-L6-v2"
+# Multilinguales Modell (384-dim, 50+ Sprachen inkl. Deutsch) — passt zu deutschen
+# Buchungstexten/Kontobezeichnungen. Per ENV überschreibbar.
+_MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
 _BATCH_SIZE = 512
 
 # ── Singleton ────────────────────────────────────────────────────────────────

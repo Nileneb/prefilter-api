@@ -159,6 +159,9 @@ LOG_FORMAT=json         # json (Production) | console (Entwicklung)
 WEBHOOK_MAX_ROWS=100    # Max. Buchungen im Webhook-Payload an Langdock
 WEBHOOK_MAX_LOG_LINES=50
 
+# Embedding-Modell für NEAR_DUPLICATE/TEXT_KONTO_MATCH (sentence-transformers)
+EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2  # multilingual, 384-dim
+
 # Redis (Result-Backend wird sonst aus REDIS_URL abgeleitet, DB 1)
 REDIS_URL=redis://redis:6379/0
 # REDIS_BACKEND_URL=redis://redis:6379/1

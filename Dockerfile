@@ -15,8 +15,11 @@ RUN if [ -f requirements.lock ]; then \
       pip install --no-cache-dir -r requirements.txt; \
     fi
 
+# Embedding-Modell zentral als ENV → Pre-Cache UND Runtime (src/embeddings.py) nutzen
+# denselben Namen, keine Drift. Multilingual (DE/EN), 384-dim.
+ENV EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
 # Pre-cache embedding model (optional — speeds up first request)
-RUN python -c "try:\n from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2'); print('Model cached successfully')\nexcept Exception as e:\n print(f'Model cache skipped: {e}')" || true
+RUN python -c "import os;\ntry:\n from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['EMBEDDING_MODEL']); print('Model cached successfully')\nexcept Exception as e:\n print(f'Model cache skipped: {e}')" || true
 
 COPY src/ src/
 COPY docs/ docs/

@@ -62,7 +62,7 @@ class TestTextEmbedder:
         texts = ["Rechnung Lieferant A", "Gutschrift B", "Miete Januar"]
         emb = embedder.embed_texts(texts)
         assert emb.shape[0] == 3
-        assert emb.shape[1] == 384  # all-MiniLM-L6-v2
+        assert emb.shape[1] == 384  # paraphrase-multilingual-MiniLM-L12-v2 (auch 384-dim)
 
     def test_embeddings_normalized(self):
         """Embeddings sind L2-normalisiert."""

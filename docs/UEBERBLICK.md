@@ -173,7 +173,12 @@ der standardmäßig **aus** ist.
   Die App fügt diese Paare gedanklich zusammen.
 - **Vorzeichen** (`accounting.py`): rechnet Soll/Haben in „+ Einnahme / − Ausgabe" um.
 - **KI-Textvergleich** (`embeddings.py`): wandelt Texte in Zahlen-Vektoren um, um
-  Ähnlichkeit zu messen (für NEAR_DUPLICATE und TEXT_KONTO_MATCH).
+  Ähnlichkeit zu messen (für NEAR_DUPLICATE und TEXT_KONTO_MATCH). Es ist ein
+  **echtes** Modell — `paraphrase-multilingual-MiniLM-L12-v2` (sentence-transformers,
+  384 Dimensionen, 50+ Sprachen inkl. Deutsch), per ENV `EMBEDDING_MODEL` austauschbar.
+  **Kein Dummy/Fake:** ist `sentence-transformers` nicht installiert, werden die zwei
+  betroffenen Tests sauber übersprungen bzw. fallen auf exakten Textvergleich zurück —
+  es werden **keine** Pseudo-Vektoren erfunden.
 - **Lieferanten aufräumen** (`kreditor_clustering.py`): erkennt, dass „Müller GmbH"
   und „Mueller G.m.b.H" derselbe Lieferant sind.
 - **History** (`history.py`): speichert jeden Lauf und vergleicht mit dem letzten.
