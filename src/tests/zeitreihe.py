@@ -119,23 +119,35 @@ class FehlendeMonatsbuchung(AnomalyTest):
             self.log("Abbruch: Zeitspanne zu kurz", months=len(full_range))
             return 0
 
-        konto_month_cnt = subset.groupby("konto_soll", observed=True)["_ym"].nunique()
+        # Gruppierschlüssel: (konto_soll, kostenstelle), damit eine Lücke einer
+        # einzelnen Kostenstelle nicht von Buchungen anderer KSTs auf dasselbe
+        # Konto überdeckt wird (#19). Fallback auf konto_soll allein, wenn keine
+        # Kostenstelle vorhanden ist → numerisch identisch zum alten Verhalten.
+        has_kst = (
+            "kostenstelle" in subset.columns
+            and subset["kostenstelle"].astype(str).str.strip().ne("").any()
+        )
+        group_key = ["konto_soll", "kostenstelle"] if has_kst else "konto_soll"
+
+        grouped         = subset.groupby(group_key, observed=True)
+        konto_month_cnt = grouped["_ym"].nunique()
         # min_active basiert auf voller Zeitspanne, nicht nur auf vorhandenen Monaten
         min_active      = max(3, int(len(full_range) * config.fehlende_buchung_min_quote))
-        regular         = konto_month_cnt[konto_month_cnt >= min_active].index
+        regular         = set(konto_month_cnt[konto_month_cnt >= min_active].index)
 
-        self.log("Reguläre Konten",
-                 total_konten=len(konto_month_cnt),
+        self.log("Reguläre Gruppen",
+                 group_key=group_key,
+                 total_gruppen=len(konto_month_cnt),
                  min_active_months=min_active,
                  quote=config.fehlende_buchung_min_quote,
-                 regular_konten=len(regular))
+                 regular_gruppen=len(regular))
 
-        if regular.empty:
-            self.log("Keine regulären Konten gefunden")
-            # Debug: Top-5 Konten mit meisten Monaten
+        if not regular:
+            self.log("Keine regulären Gruppen gefunden")
+            # Debug: Top-5 Gruppen mit meisten Monaten
             top5 = konto_month_cnt.nlargest(5)
-            for konto, n in top5.items():
-                self.log("Top-Konto", konto=str(konto), active_months=int(n),
+            for key, n in top5.items():
+                self.log("Top-Gruppe", gruppe=str(key), active_months=int(n),
                          needed=min_active)
             return 0
 
@@ -143,15 +155,16 @@ class FehlendeMonatsbuchung(AnomalyTest):
         next_of    = {p: full_range[i + 1] for i, p in enumerate(full_range[:-1])}
 
         flagged: set[int] = set()
-        konten_mit_luecken = 0
-        for konto in regular:
-            konto_data = subset[subset["konto_soll"] == konto]
-            booked     = set(konto_data["_ym"])
-            idx_by_ym  = konto_data.groupby("_ym").groups
+        gruppen_mit_luecken = 0
+        for key, gruppe_data in grouped:
+            if key not in regular:
+                continue
+            booked    = set(gruppe_data["_ym"])
+            idx_by_ym = gruppe_data.groupby("_ym").groups
             gaps = [p for p in full_range if p not in booked]
 
             if gaps:
-                konten_mit_luecken += 1
+                gruppen_mit_luecken += 1
 
             for period in gaps:
                 for adj in (prev_of.get(period), next_of.get(period)):
@@ -159,7 +172,7 @@ class FehlendeMonatsbuchung(AnomalyTest):
                         flagged.update(idx_by_ym[adj])
 
         self.log("Ergebnis",
-                 konten_mit_luecken=konten_mit_luecken,
+                 gruppen_mit_luecken=gruppen_mit_luecken,
                  total_regular=len(regular),
                  flagged=len(flagged))
 

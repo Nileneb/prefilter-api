@@ -34,7 +34,7 @@ TEST_REQUIREMENTS: dict[str, dict[str, list[str]]] = {
                                "required_any": ["erfassungsdatum", "buchungsperiode"]},
     "BUCHUNGSTEXT_PERIODE":   {"required": ["buchungstext", "datum"]},
     "MONATS_ENTWICKLUNG":     {"required": ["betrag", "datum"]},
-    "FEHLENDE_MONATSBUCHUNG": {"required": ["datum"],     "optional": ["konto_soll"]},
+    "FEHLENDE_MONATSBUCHUNG": {"required": ["datum"],     "optional": ["konto_soll", "kostenstelle"]},
     "ISOLATION_ANOMALIE":    {"required": ["betrag"],    "optional": ["datum", "konto_soll"]},
     "TEXT_KONTO_MATCH":      {"required": ["buchungstext", "konto_soll"]},
 }
