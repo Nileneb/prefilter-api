@@ -36,6 +36,7 @@ from src.feedback_stats import format_feedback_report
 from src.file_store import list_uploads, store_result, store_upload
 from src.logging_config import get_logger, setup_logging
 from src.trainer import ScoreReweighter, TrainingLocked
+from src.user_settings import load_settings, save_settings
 from src.validator import (
     ALL_TEST_NAMES,
     TEST_CATEGORIES,
@@ -56,6 +57,9 @@ GRADIO_USERNAME      = os.environ.get("GRADIO_USERNAME", "")
 GRADIO_PASSWORD      = os.environ.get("GRADIO_PASSWORD", "")
 ROOT_PATH            = os.environ.get("ROOT_PATH", "")
 JOB_TTL              = int(os.environ.get("JOB_TTL_SECONDS", "3600"))
+
+# Zuletzt genutzte Schwellenwert-Einstellungen als Slider-Defaults (#22).
+_SAVED_SETTINGS = load_settings()
 
 # ── Redis + Celery (lazy connect, Fallback wenn nicht verfügbar) ────
 _LOCAL_MODE = False
@@ -281,6 +285,25 @@ def analyze_file(
     if ext not in {".csv", ".xls", ".xlsx"}:
         yield current_state(f"Nicht unterstuetzt: {ext} -- nur CSV, XLS, XLSX")
         return
+
+    # Aktuelle Schwellenwert-Einstellungen als neue Defaults persistieren (#22).
+    try:
+        save_settings({
+            "zscore_threshold":     zscore_threshold,
+            "iqr_factor":           iqr_factor,
+            "near_duplicate_days":  int(near_duplicate_days),
+            "output_threshold":     output_threshold,
+            "prefix_ignore":        prefix_ignore,
+            "text_konto_threshold": text_konto_threshold,
+            "konto_filter_all":     bool(konto_filter_all),
+            "konto_filter_min":     int(konto_filter_min),
+            "konto_filter_max":     int(konto_filter_max),
+        })
+    except OSError as e:
+        # WHY(#22): Persistenz ist ein nicht-kritischer Seiteneffekt — ein
+        # FS-Fehler darf die Analyse nicht abbrechen, wird aber geloggt.
+        log(f"⚠️ Einstellungen nicht gespeichert: {e}")
+        logger.warning("save_settings fehlgeschlagen", error=str(e))
 
     # test_controls = [N Enable-Checkboxen] + [N Gewicht-Slider] (per Anzahl gesplittet)
     n = len(_UI_TEST_ORDER)
@@ -820,23 +843,23 @@ with gr.Blocks(
     with gr.Accordion("⚙️ Erweiterte Einstellungen", open=False):
         with gr.Row():
             zscore_slider = gr.Slider(
-                minimum=1.0, maximum=5.0, value=2.5, step=0.1,
+                minimum=1.0, maximum=5.0, value=_SAVED_SETTINGS.get("zscore_threshold", 2.5), step=0.1,
                 label="Z-Score Schwelle (BETRAG_ZSCORE)",
                 info="Höher = weniger sensitiv (Standard: 2.5)",
             )
             iqr_slider = gr.Slider(
-                minimum=0.5, maximum=5.0, value=1.5, step=0.1,
+                minimum=0.5, maximum=5.0, value=_SAVED_SETTINGS.get("iqr_factor", 1.5), step=0.1,
                 label="IQR-Faktor (BETRAG_IQR)",
                 info="Q3 + Faktor × IQR = Fence (Standard: 1.5)",
             )
         with gr.Row():
             near_dup_slider = gr.Slider(
-                minimum=1, maximum=30, value=3, step=1,
+                minimum=1, maximum=30, value=_SAVED_SETTINGS.get("near_duplicate_days", 3), step=1,
                 label="Near-Duplicate Tage (NEAR_DUPLICATE)",
                 info="Zeitfenster in Tagen (Standard: 3)",
             )
             threshold_slider = gr.Slider(
-                minimum=0.5, maximum=5.0, value=2.0, step=0.5,
+                minimum=0.5, maximum=5.0, value=_SAVED_SETTINGS.get("output_threshold", 2.0), step=0.5,
                 label="Output-Schwellenwert",
                 info="Min. Score für Ausgabe (Standard: 2.0)",
             )
@@ -844,12 +867,12 @@ with gr.Blocks(
             prefix_ignore_input = gr.Textbox(
                 label="Belegnummer-Präfixe ignorieren (kommagetrennt)",
                 placeholder="z.B. RW, SB",
-                value="",
+                value=_SAVED_SETTINGS.get("prefix_ignore", ""),
                 info="Belegnummern mit diesen Präfixen werden bei DOPPELTE_BELEGNUMMER ignoriert",
             )
         with gr.Row():
             text_konto_slider = gr.Slider(
-                minimum=0.05, maximum=0.95, value=0.3, step=0.05,
+                minimum=0.05, maximum=0.95, value=_SAVED_SETTINGS.get("text_konto_threshold", 0.3), step=0.05,
                 label="TEXT_KONTO_MATCH Threshold (Cosine-Similarity)",
                 info="Passt der Buchungstext zur Kontobezeichnung (Anker)? Unter diesem Wert → Anomalie (Standard: 0.30)",
             )
@@ -860,16 +883,16 @@ with gr.Blocks(
         )
         with gr.Row():
             konto_filter_all = gr.Checkbox(
-                value=False, label="Alle Konten einbeziehen",
+                value=_SAVED_SETTINGS.get("konto_filter_all", False), label="Alle Konten einbeziehen",
                 info="Hebt die Bereichsgrenze für ALLE Tests auf (auch Bestand/Kostenrechnung).",
             )
             konto_filter_min = gr.Number(
-                value=40000, minimum=0, maximum=99999999, precision=0,
+                value=_SAVED_SETTINGS.get("konto_filter_min", 40000), minimum=0, maximum=99999999, precision=0,
                 label="Konto von (inkl.)",
                 info="Untergrenze konto_soll — gilt für alle Tests.",
             )
             konto_filter_max = gr.Number(
-                value=80000, minimum=1, maximum=99999999, precision=0,
+                value=_SAVED_SETTINGS.get("konto_filter_max", 80000), minimum=1, maximum=99999999, precision=0,
                 label="Konto bis (exkl.)",
                 info="Obergrenze konto_soll, exklusiv (80000 → bis 79999).",
             )
