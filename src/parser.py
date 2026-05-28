@@ -45,8 +45,12 @@ COLUMN_ALIASES = {
     "buchungstext":     ["buchungstext", "text", "beschreibung", "verwendungszweck"],
     "belegnummer":      ["belegnummer", "beleg", "belegnr", "beleg_nr", "voucher"],
     "kostenstelle":     ["kostenstelle", "kst", "cost_center"],
-    "kreditor":         ["kreditor", "lieferant", "vendor", "supplier", "creditor",
-                         "bezeichnung"],
+    "kreditor":         ["kreditor", "lieferant", "vendor", "supplier", "creditor"],
+    # WHY(#21): "Bezeichnung" ist die Sachkonto-Kontobezeichnung (Anker für
+    # TEXT_KONTO_MATCH), NICHT der Kreditor. Früher als kreditor-Alias geführt →
+    # Upload-Spalte "Bezeichnung" wurde zu kreditor umbenannt, der TKM-Fallback
+    # auf die Diamant-Bezeichnung lief ins Leere. Jetzt eigener kanonischer Name.
+    "bezeichnung":      ["bezeichnung", "kontobezeichnung", "kontotext"],
     # ── Diamant-Spalten ──────────────────────────────────────
     "soll_haben":       ["soll_haben", "sollhaben", "s_h", "sh", "soll/haben", "l"],
     "klasse":           ["klasse", "class"],
