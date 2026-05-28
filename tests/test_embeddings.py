@@ -272,3 +272,62 @@ class TestAIConfig:
         """near_duplicate_text_similarity=0 deaktiviert Embedding-Vergleich."""
         config = AnalysisConfig(near_duplicate_text_similarity=0.0)
         assert config.near_duplicate_text_similarity == 0.0
+
+
+# ── TEXT_KONTO_MATCH: Kontobezeichnung als Anker (#18) ────────────────────────
+
+class TestTextKontoMatchAnchor:
+    def test_resolve_bezeichnung_prefers_gt_then_diamant(self, tmp_path):
+        """Anker = GT-Kontenplan-Bezeichnung; wo GT fehlt → Diamant-Bezeichnung."""
+        from src.tests.text_konto_match import TextKontoMatch
+        gt = tmp_path / "gt.csv"
+        gt.write_text("konto_soll,gt_bezeichnung\n4711,Mieten und Pachten\n")
+        df = pd.DataFrame({
+            "konto_soll": ["4711", "5000"],
+            "bezeichnung": ["Diamant-Miete", "Bürobedarf"],
+        })
+        col = TextKontoMatch()._resolve_bezeichnung(df, str(gt))
+        assert col == "_gt_bezeichnung"
+        assert df.loc[0, "_gt_bezeichnung"] == "Mieten und Pachten"  # GT-Vorrang
+        assert df.loc[1, "_gt_bezeichnung"] == "Bürobedarf"          # Diamant-Fallback
+
+    def test_resolve_bezeichnung_diamant_without_gt(self):
+        """Ohne GT → Diamant-Bezeichnung ist der Anker."""
+        from src.tests.text_konto_match import TextKontoMatch
+        df = pd.DataFrame({"konto_soll": ["4711"], "bezeichnung": ["Miete"]})
+        assert TextKontoMatch()._resolve_bezeichnung(df, None) == "bezeichnung"
+
+    @pytest.mark.skipif(not HAS_EMBEDDINGS, reason="sentence-transformers nicht installiert")
+    def test_anchor_direction_is_symmetric(self):
+        """Cosine symmetrisch: Vertauschen von Buchungstext/Bezeichnung ändert den
+        Score NICHT → die Anker-Wahl ist semantisch, nicht rechnerisch (#18)."""
+        from src.tests.base import EngineStats
+        from src.tests.text_konto_match import TextKontoMatch
+
+        def run_sim(buch, bez):
+            df = pd.DataFrame({
+                "konto_soll": ["4711"] * 6,
+                "buchungstext": [buch] * 6,
+                "bezeichnung": [bez] * 6,
+            })
+            config = AnalysisConfig(text_konto_gt_path=None, text_konto_threshold=0.95)
+            TextKontoMatch().run(df, EngineStats(), config)
+            return df["_text_konto_sim"].to_numpy()
+
+        forward = run_sim("Stromrechnung Stadtwerke", "Energie und Strom")
+        reverse = run_sim("Energie und Strom", "Stromrechnung Stadtwerke")
+        assert np.allclose(forward, reverse, atol=1e-5)
+
+    @pytest.mark.skipif(not HAS_EMBEDDINGS, reason="sentence-transformers nicht installiert")
+    def test_text_matching_anchor_not_flagged(self):
+        """Buchungstext identisch zur Kontobezeichnung (Anker) → sim≈1 → kein Flag."""
+        from src.tests.base import EngineStats
+        from src.tests.text_konto_match import TextKontoMatch
+        df = pd.DataFrame({
+            "konto_soll": ["4711"] * 6,
+            "buchungstext": ["Mieten und Pachten"] * 6,
+            "bezeichnung": ["Mieten und Pachten"] * 6,
+        })
+        config = AnalysisConfig(text_konto_gt_path=None, text_konto_threshold=0.3)
+        n = TextKontoMatch().run(df, EngineStats(), config)
+        assert n == 0

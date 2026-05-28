@@ -851,7 +851,7 @@ with gr.Blocks(
             text_konto_slider = gr.Slider(
                 minimum=0.05, maximum=0.95, value=0.3, step=0.05,
                 label="TEXT_KONTO_MATCH Threshold (Cosine-Similarity)",
-                info="Buchungstext ↔ Kontobezeichnung: unter diesem Wert → Anomalie (Standard: 0.30)",
+                info="Passt der Buchungstext zur Kontobezeichnung (Anker)? Unter diesem Wert → Anomalie (Standard: 0.30)",
             )
         gr.Markdown(
             "**Konten-Bereich (global, gilt für ALLE Tests)** — Default GuV "
@@ -883,8 +883,9 @@ with gr.Blocks(
             "+ Warnung), kann False Positives erzeugen."
         ),
         "TEXT_KONTO_MATCH": (
-            "Vergleicht Buchungstext ↔ Kontobezeichnung (Embeddings). Konto-Bereich "
-            "kommt aus dem globalen Filter; ohne sentence-transformers übersprungen."
+            "Prüft, ob der Buchungstext zur Kontobezeichnung (Anker, Spalte M) passt "
+            "(Embeddings). Konto-Bereich kommt aus dem globalen Filter; ohne "
+            "sentence-transformers übersprungen."
         ),
     }
     test_checkboxes: list[gr.Checkbox] = []

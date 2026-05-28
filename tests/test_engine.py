@@ -793,6 +793,67 @@ class TestEngineFehlendeMonatsbuchung:
         engine._t26_fehlende_monatsbuchung()
         assert engine.flag_counts["FEHLENDE_MONATSBUCHUNG"] == 0
 
+    def test_kostenstelle_gap_flagged_per_group(self):
+        """KST 100 hat Lücke in Monat 7, KST 200 nicht → nur KST 100 geflaggt.
+
+        Ohne Kostenstellen-Dimension (#19) würde Konto 4711 in Monat 7 von
+        KST 200 abgedeckt → globaler Test sähe keine Lücke (False Negative).
+        """
+        dates, konten, kst = [], [], []
+        # KST 200 bucht in allen 12 Monaten
+        for m in range(1, 13):
+            dates.append(f"2024-{m:02d}-15")
+            konten.append("4711")
+            kst.append("200")
+        # KST 100 bucht in 11 von 12 Monaten (Juli fehlt)
+        for m in range(1, 13):
+            if m == 7:
+                continue
+            dates.append(f"2024-{m:02d}-15")
+            konten.append("4711")
+            kst.append("100")
+        df = _make_df(
+            datum=dates,
+            betrag=["500,00"] * len(dates),
+            konto_soll=konten,
+            konto_haben=["1200"] * len(dates),
+            buchungstext=["Buchung"] * len(dates),
+            belegnummer=[f"{i:04d}" for i in range(len(dates))],
+            kostenstelle=kst,
+            erfasser=["User"] * len(dates),
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t26_fehlende_monatsbuchung()
+        flagged = engine.df[engine.df["flag_FEHLENDE_MONATSBUCHUNG"]]
+        # Nur KST 100 (Nachbarn Juni+August), keine KST-200-Zeile
+        assert engine.flag_counts["FEHLENDE_MONATSBUCHUNG"] == 2
+        assert set(flagged["kostenstelle"].astype(str)) == {"100"}
+
+    def test_kostenstelle_absent_falls_back_to_konto(self):
+        """Ohne Kostenstelle → Verhalten identisch zur reinen konto_soll-Gruppierung."""
+        dates, konten = [], []
+        for m in range(1, 13):
+            if m == 7:
+                continue
+            for _ in range(2):
+                dates.append(f"2024-{m:02d}-15")
+                konten.append("4711")
+        df = _make_df(
+            datum=dates,
+            betrag=["500,00"] * len(dates),
+            konto_soll=konten,
+            konto_haben=["1200"] * len(dates),
+            buchungstext=["Buchung"] * len(dates),
+            belegnummer=[f"{i:04d}" for i in range(len(dates))],
+            kostenstelle=[""] * len(dates),
+            erfasser=["User"] * len(dates),
+        )
+        engine = AnomalyEngine(df)
+        engine._stats()
+        engine._t26_fehlende_monatsbuchung()
+        assert engine.flag_counts["FEHLENDE_MONATSBUCHUNG"] >= 2  # Monat 6 + 8
+
 
 class TestEngineOutputThreshold:
     def test_low_score_not_in_output(self):
