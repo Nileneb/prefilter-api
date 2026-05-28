@@ -1,8 +1,16 @@
 """
 Buchungs-Anomalie Pre-Filter — Text-Konto-Match Test
 
-Vergleicht Buchungstext mit Kontobezeichnung per Cosine-Similarity.
-Unterstützt Ground-Truth-Kontenplan als optionalen Override.
+Prüfanker ist die KONTOBEZEICHNUNG (Spalte M) — sie definiert, worum es bei
+dem Konto fachlich geht. Geprüft wird, ob der Buchungstext (Spalte L) inhaltlich
+dazu passt. Beispiel: Konto "Mieten/Pachten" → der Buchungstext sollte einen
+Miet-/Pacht-Bezug haben. Niedrige Cosine-Similarity = der Buchungstext passt
+nicht zum Konto-Anker = Anomalie.
+
+Cosine-Similarity ist symmetrisch (sim(L,M) == sim(M,L)); die Bezeichnung ist
+daher der SEMANTISCHE Anker, nicht ein anderer Rechenweg. Bevorzugt wird die
+Ground-Truth-Kontenplan-Bezeichnung (text_konto_gt_path), sonst die
+Diamant-Bezeichnung.
 
 Standalone:
     python -m src.tests.text_konto_match input.csv --sweep
@@ -26,10 +34,11 @@ from src.tests.base import AnomalyTest, EngineStats
 
 
 class TextKontoMatch(AnomalyTest):
-    """Prüft ob Buchungstext semantisch zur Kontobezeichnung passt.
+    """Prüft, ob der Buchungstext zum Konto-Anker (Kontobezeichnung) passt.
 
-    Berechnet Cosine-Similarity zwischen Buchungstext-Embedding und
-    Bezeichnung-Embedding (GT oder Diamant). Niedrige Similarity = Anomalie.
+    Anker ist die Kontobezeichnung (Spalte M, GT-Kontenplan bevorzugt). Der
+    Buchungstext (Spalte L) wird gegen diesen Anker gemessen: niedrige
+    Cosine-Similarity = Buchungstext passt nicht zum Konto = Anomalie.
 
     Config:
         text_konto_threshold: float (default 0.3)
@@ -82,18 +91,21 @@ class TextKontoMatch(AnomalyTest):
         sub = df.loc[has_text].copy()
 
         # ── Embeddings ──
+        # Anker = Kontobezeichnung (anchor), gemessener Input = Buchungstext.
+        # Cosine ist symmetrisch, die Anker-Wahl ist daher semantisch, nicht
+        # rechnerisch — das Logging benennt die Bezeichnung bewusst als Anker.
         buchungstexte = sub["buchungstext"].astype(str).str.strip().values
-        bezeichnungen = sub[bez_col].astype(str).str.strip().values
+        anker_bezeichnungen = sub[bez_col].astype(str).str.strip().values
 
-        all_texts = list(set(buchungstexte) | set(bezeichnungen))
-        self.log("Embedding", n_unique_texts=len(all_texts))
+        all_texts = list(set(buchungstexte) | set(anker_bezeichnungen))
+        self.log("Embedding", n_unique_texts=len(all_texts), anchor_col=bez_col)
 
         embeddings = embedder.embed_texts(all_texts)
         text_to_idx = {t: i for i, t in enumerate(all_texts)}
 
         idx_buch = np.array([text_to_idx[t] for t in buchungstexte])
-        idx_bez = np.array([text_to_idx[t] for t in bezeichnungen])
-        similarities = embedder.cosine_similarity_pairs(embeddings, idx_buch, idx_bez)
+        idx_anker = np.array([text_to_idx[t] for t in anker_bezeichnungen])
+        similarities = embedder.cosine_similarity_pairs(embeddings, idx_buch, idx_anker)
         sub["_text_konto_sim"] = similarities
 
         # ── Statistiken ──
