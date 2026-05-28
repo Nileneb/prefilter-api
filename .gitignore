@@ -26,3 +26,6 @@ data/uploads/
 docs/gt_lookup.csv
 docs/gt_vs_diamant_diffs.csv
 docs/text_konto_match.py
+# Persistente UI-Einstellungen (#22) — lokal, nicht committen
+user_settings.json
+user_settings.json.tmp

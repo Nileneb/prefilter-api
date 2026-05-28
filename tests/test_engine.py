@@ -954,7 +954,8 @@ class TestParserDiamantAliases:
             "Kontonummer": ["4711"],
             "Buchungstext": ["Test"],
             "Belegnummer": ["001"],
-            "Bezeichnung": ["Lieferant A"],
+            "Bezeichnung": ["Mieten und Pachten"],
+            "Kreditor": ["Lieferant A"],
             "Klasse": ["K"],
             "Generalumgekehrt": ["0"],
         })
@@ -963,8 +964,22 @@ class TestParserDiamantAliases:
         assert "betrag" in mapped.columns
         assert "konto_soll" in mapped.columns
         assert "kreditor" in mapped.columns
+        assert "bezeichnung" in mapped.columns
         assert "klasse" in mapped.columns
         assert "generalumgekehrt" in mapped.columns
+
+    def test_bezeichnung_maps_to_own_column_not_kreditor(self):
+        """#21: 'Bezeichnung' ist die Kontobezeichnung → eigene Spalte, NICHT kreditor."""
+        df = pd.DataFrame({
+            "Kontonummer": ["4711"],
+            "Buchungstext": ["Test"],
+            "Bezeichnung": ["Mieten und Pachten"],
+        })
+        mapped = map_columns(df)
+        assert "bezeichnung" in mapped.columns
+        assert mapped["bezeichnung"].iloc[0] == "Mieten und Pachten"
+        # Keine Kreditor-Spalte vorhanden → Bezeichnung darf NICHT als kreditor landen
+        assert "kreditor" not in mapped.columns
 
     def test_pipe_delimited_csv(self, tmp_path):
         """Pipe-delimitierte CSV wird korrekt gelesen."""
