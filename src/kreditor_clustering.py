@@ -12,6 +12,7 @@ Public API:
 
 from __future__ import annotations
 
+from src.embedding_store import embed_cached
 from src.logging_config import get_logger
 
 logger = get_logger("prefilter.kreditor_clustering")
@@ -50,7 +51,7 @@ def cluster_kreditors(
         return {n: n for n in names}
 
     # Embeddings berechnen
-    emb = embedder.embed_texts(names)
+    emb = embed_cached(embedder, names)
 
     # DBSCAN mit Cosine-Distanz (= 1 - similarity auf normalisierten Vektoren)
     clustering = DBSCAN(eps=eps, min_samples=2, metric="cosine").fit(emb)

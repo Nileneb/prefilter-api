@@ -22,6 +22,7 @@ import pandas as pd
 from src import history
 from src.accounting import compute_signed_betrag, kontoklasse
 from src.config import AnalysisConfig
+from src.embedding_store import embed_cached
 from src.embeddings import HAS_EMBEDDINGS, get_embedder
 from src.kreditor_clustering import cluster_kreditors
 from src.logging_config import get_logger
@@ -245,7 +246,7 @@ class AnomalyEngine:
             if embedder is not None:
                 try:
                     texts = df["buchungstext"].astype(str).tolist()
-                    self._text_embeddings = embedder.embed_texts(texts)
+                    self._text_embeddings = embed_cached(embedder, texts)
                     self._log(f"Text-Embeddings berechnet: {self._text_embeddings.shape}")
                 except Exception as e:
                     logger.warning("Text-Embedding fehlgeschlagen", error=str(e))
