@@ -331,3 +331,8 @@ class TestTextKontoMatchAnchor:
         config = AnalysisConfig(text_konto_gt_path=None, text_konto_threshold=0.3)
         n = TextKontoMatch().run(df, EngineStats(), config)
         assert n == 0
+
+
+def test_embedder_exposes_model_name():
+    from src.embeddings import _MODEL_NAME, TextEmbedder
+    assert TextEmbedder().model_name == _MODEL_NAME
