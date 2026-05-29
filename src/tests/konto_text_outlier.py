@@ -10,8 +10,11 @@ kontoeigenen Verteilung. Unsupervised, kein Vergleich gegen den Kontonamen.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 from src.config import AnalysisConfig
+from src.embedding_store import embed_cached
+from src.embeddings import HAS_EMBEDDINGS, get_embedder
 from src.tests.base import AnomalyTest, EngineStats
 
 try:
@@ -56,3 +59,50 @@ def find_text_outliers(
         return np.zeros(n, dtype=bool), np.ones(n, dtype=np.float32)
 
     return mask, fit
+
+
+class KontoTextOutlier(AnomalyTest):
+    name = "KONTO_TEXT_OUTLIER"
+    weight = 2.0
+    critical = False
+    required_columns = ["buchungstext", "konto_soll", "_konto_in_scope"]
+
+    def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
+        if not HAS_EMBEDDINGS or not HAS_SKLEARN:
+            self.log("SKIP: embeddings/sklearn fehlen")
+            return 0
+        embedder = get_embedder()
+        if embedder is None:
+            return 0
+
+        min_bookings = config.konto_text_outlier_min_bookings
+        eps = config.konto_text_outlier_eps
+        min_samples = config.konto_text_outlier_min_samples
+
+        has_text = df["buchungstext"].astype(str).str.strip().ne("")
+        if "_konto_in_scope" in df.columns:
+            has_text = has_text & df["_konto_in_scope"].fillna(False).astype(bool)
+        sub = df.loc[has_text]
+        if sub.empty:
+            return 0
+
+        flagged_idx: list = []
+        for konto, grp in sub.groupby("konto_soll", observed=True):
+            if len(grp) < min_bookings:
+                continue
+            texts = grp["buchungstext"].astype(str).str.strip().tolist()
+            emb = embed_cached(embedder, texts)
+            mask, fit = find_text_outliers(emb, eps=eps, min_samples=min_samples)
+            n_out = int(mask.sum())
+            if n_out:
+                self.log("Konto-Ausreißer", konto=str(konto), n=n_out,
+                         min_fit=round(float(fit[mask].min()), 3))
+                flagged_idx.extend(grp.index[mask].tolist())
+
+        if flagged_idx:
+            df.loc[flagged_idx, f"flag_{self.name}"] = True
+        return len(flagged_idx)
+
+
+def get_tests() -> list[AnomalyTest]:
+    return [KontoTextOutlier()]
