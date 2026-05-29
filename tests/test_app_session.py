@@ -38,7 +38,7 @@ def test_session_isolated_across_two_runs(app_local, tmp_path):
     n = len(app_local.ALL_TEST_NAMES)
     # webhook, zscore, iqr, near_dup, output, prefix, text_konto_thr,
     # konto_filter_all=True (alle Konten → Test-df nutzt Bestandskonto), min, max
-    defaults = ("", 2.5, 1.5, 3, 2.0, "", 0.3, True, 0, 99999999)
+    defaults = ("", 2.5, 1.5, 3, 2.0, "", 0.3, True, 0, 99999999, 0.20, 8)
     controls = [True] * n + [2.0] * n  # Enables + Gewicht-Slider
 
     # Zwei unabhängige Sessions
@@ -66,7 +66,7 @@ def test_session_isolated_across_two_runs(app_local, tmp_path):
 def test_dynamic_chart_persists_fig_in_session(app_local, tmp_path):
     csv = _make_csv(tmp_path)
     n = len(app_local.ALL_TEST_NAMES)
-    defaults = ("", 2.5, 1.5, 3, 2.0, "", 0.3, True, 0, 99999999)
+    defaults = ("", 2.5, 1.5, 3, 2.0, "", 0.3, True, 0, 99999999, 0.20, 8)
     controls = [True] * n + [2.0] * n
     s = app_local._new_session()
     for _ in app_local.analyze_file(s, csv, *defaults, *controls):
@@ -100,7 +100,7 @@ def test_isolation_checkbox_is_the_only_switch(app_local, tmp_path):
     order = app_local._UI_TEST_ORDER
     n_tests = len(order)
     # Default-Filter (GuV), nur ISOLATION ankreuzen (single switch)
-    defaults = ("", 2.5, 1.5, 3, 2.0, "", 0.3, False, 40000, 80000)
+    defaults = ("", 2.5, 1.5, 3, 2.0, "", 0.3, False, 40000, 80000, 0.20, 8)
     enables = [name == "ISOLATION_ANOMALIE" for name in order]
     controls = enables + [2.0] * n_tests
 

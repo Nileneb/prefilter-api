@@ -257,6 +257,8 @@ def analyze_file(
     konto_filter_all: bool,
     konto_filter_min: int,
     konto_filter_max: int,
+    kto_outlier_eps: float,
+    kto_outlier_min: int,
     *test_controls,
 ):
     """Generator: yielded (summary, logs, table, csv, session) bei jedem Schritt."""
@@ -289,15 +291,17 @@ def analyze_file(
     # Aktuelle Schwellenwert-Einstellungen als neue Defaults persistieren (#22).
     try:
         save_settings({
-            "zscore_threshold":     zscore_threshold,
-            "iqr_factor":           iqr_factor,
-            "near_duplicate_days":  int(near_duplicate_days),
-            "output_threshold":     output_threshold,
-            "prefix_ignore":        prefix_ignore,
-            "text_konto_threshold": text_konto_threshold,
-            "konto_filter_all":     bool(konto_filter_all),
-            "konto_filter_min":     int(konto_filter_min),
-            "konto_filter_max":     int(konto_filter_max),
+            "zscore_threshold":               zscore_threshold,
+            "iqr_factor":                     iqr_factor,
+            "near_duplicate_days":            int(near_duplicate_days),
+            "output_threshold":               output_threshold,
+            "prefix_ignore":                  prefix_ignore,
+            "text_konto_threshold":           text_konto_threshold,
+            "konto_filter_all":               bool(konto_filter_all),
+            "konto_filter_min":               int(konto_filter_min),
+            "konto_filter_max":               int(konto_filter_max),
+            "konto_text_outlier_eps":         float(kto_outlier_eps),
+            "konto_text_outlier_min_bookings": int(kto_outlier_min),
         })
     except OSError as e:
         # WHY(#22): Persistenz ist ein nicht-kritischer Seiteneffekt — ein
@@ -338,6 +342,8 @@ def analyze_file(
         "konto_filter_min":    int(konto_filter_min),
         "konto_filter_max":    int(konto_filter_max),
         "isolation_enabled":   isolation_on,
+        "konto_text_outlier_eps":          float(kto_outlier_eps),
+        "konto_text_outlier_min_bookings": int(kto_outlier_min),
     }
 
     # ── Lokaler Fallback-Modus ────────────────────────────────
@@ -876,6 +882,19 @@ with gr.Blocks(
                 label="TEXT_KONTO_MATCH Threshold (Cosine-Similarity)",
                 info="Passt der Buchungstext zur Kontobezeichnung (Anker)? Unter diesem Wert → Anomalie (Standard: 0.30)",
             )
+        with gr.Row():
+            kto_outlier_eps_slider = gr.Slider(
+                minimum=0.05, maximum=0.95, step=0.05,
+                value=_SAVED_SETTINGS.get("konto_text_outlier_eps", 0.20),
+                label="KONTO_TEXT_OUTLIER eps (DBSCAN cosine-Distanz)",
+                info="Maximale Cosine-Distanz zum Cluster-Kern — größer = toleranter (Standard: 0.20)",
+            )
+            kto_outlier_min_slider = gr.Slider(
+                minimum=3, maximum=50, step=1,
+                value=_SAVED_SETTINGS.get("konto_text_outlier_min_bookings", 8),
+                label="KONTO_TEXT_OUTLIER min. Buchungen/Konto",
+                info="Konten mit weniger Buchungen werden übersprungen (Standard: 8)",
+            )
         gr.Markdown(
             "**Konten-Bereich (global, gilt für ALLE Tests)** — Default GuV "
             "(Ertrag 40000–59999 + Aufwand 60000–79999). Bestandskonten (<40000) und "
@@ -1103,6 +1122,7 @@ with gr.Blocks(
             prefix_ignore_input,
             text_konto_slider,
             konto_filter_all, konto_filter_min, konto_filter_max,
+            kto_outlier_eps_slider, kto_outlier_min_slider,
             *test_checkboxes,
             *weight_sliders,
         ],
