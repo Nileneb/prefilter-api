@@ -885,9 +885,9 @@ with gr.Blocks(
         with gr.Row():
             kto_outlier_eps_slider = gr.Slider(
                 minimum=0.05, maximum=0.95, step=0.05,
-                value=_SAVED_SETTINGS.get("konto_text_outlier_eps", 0.20),
+                value=_SAVED_SETTINGS.get("konto_text_outlier_eps", 0.55),
                 label="KONTO_TEXT_OUTLIER eps (DBSCAN cosine-Distanz)",
-                info="Maximale Cosine-Distanz zum Cluster-Kern — größer = toleranter (Standard: 0.20)",
+                info="Maximale Cosine-Distanz zum Cluster-Kern — größer = toleranter (Standard: 0.55)",
             )
             kto_outlier_min_slider = gr.Slider(
                 minimum=3, maximum=50, step=1,

@@ -20,5 +20,5 @@ def test_konto_text_outlier_defaults():
     from src.config import AnalysisConfig
     c = AnalysisConfig()
     assert c.konto_text_outlier_min_bookings == 8
-    assert c.konto_text_outlier_eps == 0.20
+    assert c.konto_text_outlier_eps == 0.55
     assert c.konto_text_outlier_min_samples == 3
