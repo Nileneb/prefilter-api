@@ -154,8 +154,13 @@ class AnalysisConfig(BaseModel):
 
     # ── Text-Konto-Match ─────────────────────────────────────────────────────
     text_konto_threshold: float = Field(
-        0.3, ge=0.0, le=1.0,
-        description="Cosine-Similarity-Schwelle für TEXT_KONTO_MATCH (Standard: 0.3). Unter diesem Wert = Anomalie.",
+        0.12, ge=0.0, le=1.0,
+        description="TEXT_KONTO_MATCH (Konto-Ebene): liegt die MITTLERE Cosine-Similarity "
+                    "aller Buchungstexte eines Kontos zum Kontonamen unter diesem Wert, gilt das "
+                    "Konto als systematisch namens-fremd genutzt → alle Buchungen geflaggt. "
+                    "Standard 0.12 (konservativ). WHY: Diamant-Buchungstexte sind oft Namen/"
+                    "Referenzen statt Konto-Beschreibungen → höhere Schwellen flaggen legitime "
+                    "Konten (Lohn, Abschreibung). Höher stellen, um verdächtigere Konten zu sehen.",
     )
     text_konto_min_bookings: int = Field(
         5, ge=1,

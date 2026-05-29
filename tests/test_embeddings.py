@@ -332,6 +332,34 @@ class TestTextKontoMatchAnchor:
         n = TextKontoMatch().run(df, EngineStats(), config)
         assert n == 0
 
+    @pytest.mark.skipif(not HAS_EMBEDDINGS, reason="sentence-transformers nicht installiert")
+    def test_account_level_flags_systematic_mismatch_only(self):
+        """Konto-Ebene: ein Konto, dessen Buchungstexte im SCHNITT nicht zum Namen
+        passen, wird KOMPLETT geflaggt; ein passendes Konto NICHT. Genau das
+        Phänomen (systematische Fehlnutzung), das KONTO_TEXT_OUTLIER nicht sieht."""
+        from src.tests.base import EngineStats
+        from src.tests.text_konto_match import TextKontoMatch
+        # Konto 4711 "Mieten und Pachten": alle Texte sind Gehalt → systematisch falsch
+        mism = {
+            "konto_soll": ["4711"] * 6,
+            "buchungstext": ["Gehaltszahlung Lohn Mitarbeiter"] * 6,
+            "bezeichnung": ["Mieten und Pachten"] * 6,
+        }
+        # Konto 5000 "Bürobedarf": Texte passen thematisch
+        match = {
+            "konto_soll": ["5000"] * 6,
+            "buchungstext": ["Bürobedarf Papier", "Büromaterial Toner", "Bürobedarf Stifte",
+                             "Büromaterial Ordner", "Bürobedarf Papier", "Büromaterial Toner"],
+            "bezeichnung": ["Bürobedarf"] * 6,
+        }
+        df = pd.DataFrame({k: mism[k] + match[k] for k in mism})
+        config = AnalysisConfig(text_konto_gt_path=None, text_konto_threshold=0.3)
+        TextKontoMatch().run(df, EngineStats(), config)
+        flagged = df["flag_TEXT_KONTO_MATCH"].fillna(False)
+        # Alle 6 Mieten-Zeilen geflaggt, keine Bürobedarf-Zeile
+        assert flagged[df["konto_soll"] == "4711"].all()
+        assert not flagged[df["konto_soll"] == "5000"].any()
+
 
 def test_embedder_exposes_model_name():
     from src.embeddings import _MODEL_NAME, TextEmbedder

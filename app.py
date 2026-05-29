@@ -878,9 +878,9 @@ with gr.Blocks(
             )
         with gr.Row():
             text_konto_slider = gr.Slider(
-                minimum=0.05, maximum=0.95, value=_SAVED_SETTINGS.get("text_konto_threshold", 0.3), step=0.05,
-                label="TEXT_KONTO_MATCH Threshold (Cosine-Similarity)",
-                info="Passt der Buchungstext zur Kontobezeichnung (Anker)? Unter diesem Wert → Anomalie (Standard: 0.30)",
+                minimum=0.05, maximum=0.95, value=_SAVED_SETTINGS.get("text_konto_threshold", 0.12), step=0.05,
+                label="TEXT_KONTO_MATCH Schwelle (Konto-Mittel-Similarity)",
+                info="Liegt die MITTLERE Similarity der Buchungstexte eines Kontos zum Kontonamen darunter → ganzes Konto namens-fremd geflaggt (Standard: 0.12 konservativ)",
             )
         with gr.Row():
             kto_outlier_eps_slider = gr.Slider(
@@ -925,9 +925,9 @@ with gr.Blocks(
             "+ Warnung), kann False Positives erzeugen."
         ),
         "TEXT_KONTO_MATCH": (
-            "Prüft, ob der Buchungstext zur Kontobezeichnung (Anker, Spalte M) passt "
-            "(Embeddings). Konto-Bereich kommt aus dem globalen Filter; ohne "
-            "sentence-transformers übersprungen."
+            "Konto-Ebene: flaggt Konten, deren Buchungstexte im SCHNITT nicht zum "
+            "Kontonamen passen (systematische Fehlnutzung). Ergänzt KONTO_TEXT_OUTLIER "
+            "(Zeilen-Typik). Ohne sentence-transformers übersprungen."
         ),
     }
     test_checkboxes: list[gr.Checkbox] = []

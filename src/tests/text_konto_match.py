@@ -35,15 +35,22 @@ from src.tests.base import AnomalyTest, EngineStats
 
 
 class TextKontoMatch(AnomalyTest):
-    """Prüft, ob der Buchungstext zum Konto-Anker (Kontobezeichnung) passt.
+    """Prüft auf KONTO-EBENE, ob ein Konto gemäß seinem Namen genutzt wird.
 
-    Anker ist die Kontobezeichnung (Spalte M, GT-Kontenplan bevorzugt). Der
-    Buchungstext (Spalte L) wird gegen diesen Anker gemessen: niedrige
-    Cosine-Similarity = Buchungstext passt nicht zum Konto = Anomalie.
+    Anker = Kontobezeichnung (GT-Kontenplan bevorzugt, sonst Diamant-Bezeichnung).
+    Pro Konto wird die MITTLERE Cosine-Similarity aller Buchungstexte zum Anker
+    gebildet; liegt sie unter `text_konto_threshold`, ist das Konto systematisch
+    namens-fremd bebucht (mögliche Dauer-Fehlkontierung / Stammdaten-Problem) →
+    alle seine Buchungen werden geflaggt.
+
+    Bewusst Konto-Ebene (Mittelwert), NICHT pro Zeile: das findet das Phänomen,
+    das KONTO_TEXT_OUTLIER NICHT kann — systematische/mehrheitliche Fehlnutzung
+    (deren Centroid der Outlier als "normal" absorbiert) — und vermeidet die
+    per-Zeile-False-Positives bei legitimen, aber namens-fernen Texten.
 
     Config:
-        text_konto_threshold: float (default 0.3)
-        text_konto_min_bookings: int (default 5)
+        text_konto_threshold: float — Schwelle für die mittlere Konto-Similarity
+        text_konto_min_bookings: int — Mindest-Buchungen pro Konto
         text_konto_gt_path: str | None — CSV mit konto_soll,gt_bezeichnung
     """
 
@@ -123,24 +130,32 @@ class TextKontoMatch(AnomalyTest):
                      n_below=int((similarities < val).sum()))
             self.metric(f"p{pct}", round(val, 3))
 
-        # ── Flaggen ──
-        anomaly_mask = similarities < threshold
+        # ── Flaggen auf KONTO-EBENE (Reframe) ──
+        # Pro Konto die mittlere Similarity Buchungstext↔Konto-Anker. Liegt der
+        # Schnitt unter der Schwelle, wird das Konto SYSTEMATISCH nicht gemäß
+        # seinem Namen genutzt → alle seine Buchungen flaggen. Das ist orthogonal
+        # zu KONTO_TEXT_OUTLIER (Zeilen-Typik) und vermeidet die per-Zeile-False-
+        # Positives (legitime, aber namens-ferne Texte wie Adressen auf "Mieten").
+        konto = sub["konto_soll"].astype(str).str.strip()
+        sim_s = pd.Series(similarities, index=sub.index)
+        grp = sim_s.groupby(konto)
+        mean_per_konto = grp.transform("mean")
+        size_per_konto = grp.transform("size")
+        flag_mask = (mean_per_konto < threshold) & (size_per_konto >= min_bookings)
+        n_flagged = int(flag_mask.sum())
 
-        konto_counts = sub["konto_soll"].value_counts()
-        small_konten = konto_counts[konto_counts < min_bookings].index
-        skip_mask = sub["konto_soll"].isin(small_konten)
-
-        final_mask = anomaly_mask & ~skip_mask
-        n_flagged = int(final_mask.sum())
-
-        self.log("Flagged",
-                 n_below_threshold=int(anomaly_mask.sum()),
-                 n_skipped_small_konto=int(skip_mask.sum()),
-                 n_final=n_flagged)
+        konto_stats = grp.agg(["mean", "size"])
+        hits = konto_stats[(konto_stats["mean"] < threshold) & (konto_stats["size"] >= min_bookings)]
+        self.log("Flagged (Konto-Ebene)",
+                 n_konten_namensfremd=int(len(hits)),
+                 n_buchungen_geflaggt=n_flagged)
+        for k, r in hits.iterrows():
+            self.log("Konto namens-fremd", konto=str(k),
+                     mean_sim=round(float(r["mean"]), 3), n=int(r["size"]))
 
         if n_flagged > 0:
-            df.loc[sub.index[final_mask], f"flag_{self.name}"] = True
-            df.loc[sub.index, "_text_konto_sim"] = similarities
+            df.loc[sub.index[flag_mask], f"flag_{self.name}"] = True
+        df.loc[sub.index, "_text_konto_sim"] = similarities
 
         return n_flagged
 
