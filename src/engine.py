@@ -33,6 +33,7 @@ from src.tests.buchungslogik import _GU_FALSY
 from src.tests.buchungslogik import get_tests as get_buchungslogik_tests
 from src.tests.duplikate import get_tests as get_duplikate_tests
 from src.tests.isolation_anomaly import get_tests as get_isolation_tests
+from src.tests.konto_text_outlier import get_tests as get_konto_text_outlier_tests
 from src.tests.kreditor import get_tests as get_kreditor_tests
 from src.tests.text_konto_match import get_tests as get_text_match_tests
 from src.tests.zeitreihe import get_tests as get_zeitreihe_tests
@@ -49,6 +50,7 @@ _ALL_TESTS = (
     + get_zeitreihe_tests()
     + get_isolation_tests()
     + get_text_match_tests()
+    + get_konto_text_outlier_tests()
 )
 
 # Abgeleitete Lookup-Strukturen

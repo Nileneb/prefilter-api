@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from src.tests.konto_text_outlier import find_text_outliers
+from src.config import AnalysisConfig
+from src.embeddings import HAS_EMBEDDINGS
+from src.tests.base import EngineStats
+from src.tests.konto_text_outlier import KontoTextOutlier, find_text_outliers
 
 
 def _norm(v):
@@ -34,13 +38,6 @@ def test_too_few_rows_returns_all_false():
     emb = _norm(np.random.RandomState(0).rand(2, 3))
     mask, fit = find_text_outliers(emb, eps=0.15, min_samples=3)
     assert mask.tolist() == [False, False]
-
-
-from src.embeddings import HAS_EMBEDDINGS
-from src.config import AnalysisConfig
-from src.tests.base import EngineStats
-from src.tests.konto_text_outlier import KontoTextOutlier
-import pandas as pd
 
 
 @pytest.mark.skipif(not HAS_EMBEDDINGS, reason="sentence-transformers nicht installiert")
