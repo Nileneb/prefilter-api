@@ -33,9 +33,14 @@ def _key(model: str, text: str) -> str:
     return h.hexdigest()
 
 
+_SQLITE_BATCH = 900  # WHY: SQLite default SQLITE_LIMIT_VARIABLE_NUMBER=999; stay safely under
+
+
 def _connect() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(CACHE_DB) or ".", exist_ok=True)
     conn = sqlite3.connect(CACHE_DB)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS embeddings ("
         "  key TEXT PRIMARY KEY, dim INTEGER NOT NULL, vector BLOB NOT NULL"
@@ -63,12 +68,18 @@ def embed_cached(embedder, texts: list[str]) -> np.ndarray:
     conn = _connect()
     try:
         keys = {t: _key(model, t) for t in unique}
-        placeholders = ",".join("?" for _ in unique)
-        rows = conn.execute(
-            f"SELECT key, dim, vector FROM embeddings WHERE key IN ({placeholders})",
-            [keys[t] for t in unique],
-        ).fetchall()
-        by_key = {k: np.frombuffer(buf, dtype=np.float32).reshape(dim) for k, dim, buf in rows}
+        key_list = [keys[t] for t in unique]
+        by_key: dict[str, np.ndarray] = {}
+        for i in range(0, len(key_list), _SQLITE_BATCH):
+            batch = key_list[i : i + _SQLITE_BATCH]
+            placeholders = ",".join("?" for _ in batch)
+            rows = conn.execute(
+                f"SELECT key, dim, vector FROM embeddings WHERE key IN ({placeholders})",
+                batch,
+            ).fetchall()
+            by_key.update(
+                {k: np.frombuffer(buf, dtype=np.float32).reshape(dim) for k, dim, buf in rows}
+            )
 
         misses = [t for t in unique if keys[t] not in by_key]
         for t in unique:

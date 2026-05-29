@@ -62,3 +62,21 @@ def test_cache_keyed_by_model(store_db):
 def test_empty_input(store_db):
     out = es.embed_cached(_FakeEmbedder(), [])
     assert out.shape == (0,)
+
+
+def test_chunked_lookup_beyond_sqlite_batch(store_db):
+    """Regression: embed > 1000 distinct texts in one call (crosses _SQLITE_BATCH boundary)."""
+    n = 1_100
+    texts = [f"text_{i:04d}" for i in range(n)]
+
+    emb = _FakeEmbedder()
+    out1 = es.embed_cached(emb, texts)
+    assert out1.shape == (n, 4)
+    assert len(emb.embedded) == n  # all were misses on first call
+
+    # Second call: every key is now cached — embedder must NOT be called again
+    emb.embedded.clear()
+    out2 = es.embed_cached(emb, texts)
+    assert emb.embedded == [], "embedder called despite full cache hit"
+    assert out2.shape == (n, 4)
+    np.testing.assert_allclose(out1, out2)
