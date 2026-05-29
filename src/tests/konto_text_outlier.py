@@ -86,12 +86,16 @@ class KontoTextOutlier(AnomalyTest):
         if sub.empty:
             return 0
 
+        all_texts = sub["buchungstext"].astype(str).str.strip().tolist()
+        all_emb = embed_cached(embedder, all_texts)
+        positions = {idx: i for i, idx in enumerate(sub.index)}
+
         flagged_idx: list = []
         for konto, grp in sub.groupby("konto_soll", observed=True):
             if len(grp) < min_bookings:
                 continue
-            texts = grp["buchungstext"].astype(str).str.strip().tolist()
-            emb = embed_cached(embedder, texts)
+            pos = [positions[i] for i in grp.index]
+            emb = all_emb[pos]
             mask, fit = find_text_outliers(emb, eps=eps, min_samples=min_samples)
             n_out = int(mask.sum())
             if n_out:
