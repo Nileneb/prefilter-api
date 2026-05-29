@@ -26,18 +26,32 @@ def test_dense_cluster_plus_one_outlier():
 
 
 def test_two_legit_clusters_no_false_positive():
-    # Zwei legitime Profile (z.B. zwei Adressformate) → keiner ist Ausreißer
+    # Zwei legitime Profile → Centroid liegt dazwischen (fit ~0.71 für beide);
+    # beim Produktions-eps (0.55 → Schwelle 0.45) wird KEINER als Ausreißer geflaggt.
     a = _norm(np.tile([1.0, 0.0, 0.0], (4, 1)) + 0.01)
     b = _norm(np.tile([0.0, 1.0, 0.0], (4, 1)) + 0.01)
     emb = np.vstack([a, b])
-    mask, _ = find_text_outliers(emb, eps=0.15, min_samples=3)
+    mask, _ = find_text_outliers(emb, eps=0.55, min_samples=3)
     assert mask.sum() == 0
 
 
 def test_too_few_rows_returns_all_false():
     emb = _norm(np.random.RandomState(0).rand(2, 3))
-    mask, fit = find_text_outliers(emb, eps=0.15, min_samples=3)
+    mask, fit = find_text_outliers(emb, eps=0.55, min_samples=3)
     assert mask.tolist() == [False, False]
+
+
+def test_scales_to_large_account_no_quadratic_blowup():
+    """20k Buchungen müssen sofort durchlaufen (O(n), kein n×n) — die DBSCAN-
+    Variante hätte hier eine ~1.6GB-Distanzmatrix gebaut (OOM auf 200MB-Mandant)."""
+    rng = np.random.RandomState(0)
+    dense = _norm(np.tile([1.0, 0.0, 0.0], (20_000, 1)) + rng.rand(20_000, 3) * 0.02)
+    outliers = _norm(np.array([[0.0, 1.0, 0.0]] * 5))
+    emb = np.vstack([dense, outliers]).astype(np.float32)
+    mask, fit = find_text_outliers(emb, eps=0.55, min_samples=8)
+    assert mask.shape == (20_005,)
+    assert mask[-5:].all()            # die 5 orthogonalen Ausreißer geflaggt
+    assert mask[:20_000].sum() == 0   # dichte Masse nicht geflaggt
 
 
 @pytest.mark.skipif(not HAS_EMBEDDINGS, reason="sentence-transformers nicht installiert")

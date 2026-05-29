@@ -1,10 +1,15 @@
 """
 Buchungs-Anomalie Pre-Filter — KONTO_TEXT_OUTLIER
 
-Pro Konto bilden die Buchungstext-Embeddings ein oder mehrere dichte Cluster
-(z.B. "Adressen" für Mieten). DBSCAN markiert Punkte, die in keinem dichten
-Cluster liegen, als Noise — das sind die semantischen Ausreißer RELATIV zur
-kontoeigenen Verteilung. Unsupervised, kein Vergleich gegen den Kontonamen.
+Pro Konto bildet das gemeinsame Textprofil (Centroid = Mittelvektor aller
+Buchungstext-Embeddings) den "Normalfall". Eine Buchung ist ein semantischer
+Ausreißer, wenn ihr Text weit vom Konto-Centroid entfernt liegt (Cosine zum
+Centroid < 1 - eps). Unsupervised, kein Vergleich gegen den Kontonamen.
+
+WHY(scale): Bewusst O(n) Zeit / O(d) Speicher (ein Centroid + ein Dot-Product),
+KEIN DBSCAN mit n×n-Distanzmatrix — die sprengte bei großen Konten (zehntausende
+Buchungen) den RAM (SIGKILL/OOM auf 200MB-Mandanten). So wird JEDE Buchung
+verarbeitet, ohne Cap/Sampling.
 """
 
 from __future__ import annotations
@@ -17,47 +22,39 @@ from src.embedding_store import embed_cached
 from src.embeddings import HAS_EMBEDDINGS, get_embedder
 from src.tests.base import AnomalyTest, EngineStats
 
-try:
-    from sklearn.cluster import DBSCAN  # type: ignore[import-untyped]
-    HAS_SKLEARN = True
-except ImportError:
-    HAS_SKLEARN = False
-
 
 def find_text_outliers(
     emb: np.ndarray, eps: float, min_samples: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Findet Ausreißer-Buchungen anhand DBSCAN-Cluster auf Embeddings.
+    """Ausreißer = Buchungstext weit vom gemeinsamen Konto-Textprofil entfernt.
+
+    Profil = Centroid (renormierter Mittelvektor) aller Konto-Embeddings.
+    fit[i] = Cosine(emb[i], Centroid). Ausreißer wenn fit < (1 - eps).
+    O(n) Zeit, O(d) Speicher — skaliert auf beliebig große Konten.
 
     Args:
         emb: (N, D) L2-normierte Embeddings der Buchungstexte EINES Kontos.
-        eps: DBSCAN epsilon (cosine-Distanz).
-        min_samples: Mindest-Punkte für ein dichtes Cluster.
+        eps: max. Cosine-Distanz zum Centroid, ab der eine Buchung als Ausreißer
+             gilt (fit < 1 - eps).
+        min_samples: Mindest-Buchungen für ein verlässliches Profil; darunter
+             keine Wertung (alles False).
 
     Returns:
-        (mask, fit): mask[i]=True → Buchung i ist Ausreißer (DBSCAN-Noise).
-        fit[i] = cosine zum nächsten Cluster-Centroid (1.0 wenn kein Cluster).
+        (mask, fit): mask[i]=True → Buchung i ist Ausreißer.
+        fit[i] = Cosine zum Konto-Centroid.
     """
     n = emb.shape[0]
-    if n < min_samples or not HAS_SKLEARN:
+    if n < min_samples:
         return np.zeros(n, dtype=bool), np.ones(n, dtype=np.float32)
 
-    labels = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine").fit(emb).labels_
-    mask = labels == -1
-
-    # Centroids je Cluster (Mittelvektor, renormiert) für erklärbaren Fit-Score
-    centroids = []
-    for lab in sorted(set(labels) - {-1}):
-        c = emb[labels == lab].mean(axis=0)
-        norm = np.linalg.norm(c)
-        centroids.append(c / norm if norm else c)
-    if centroids:
-        cmat = np.vstack(centroids)
-        fit = (emb @ cmat.T).max(axis=1).astype(np.float32)
-    else:
-        # Kein dichtes Cluster gefunden → kein verlässliches Profil
+    centroid = emb.mean(axis=0)
+    norm = float(np.linalg.norm(centroid))
+    if norm == 0.0:
         return np.zeros(n, dtype=bool), np.ones(n, dtype=np.float32)
+    centroid = centroid / norm
 
+    fit = (emb @ centroid).astype(np.float32)  # Cosine zum Centroid, O(n·d)
+    mask = fit < np.float32(1.0 - eps)
     return mask, fit
 
 
@@ -68,8 +65,8 @@ class KontoTextOutlier(AnomalyTest):
     required_columns = ["buchungstext", "konto_soll", "_konto_in_scope"]
 
     def run(self, df: pd.DataFrame, stats: EngineStats, config: AnalysisConfig) -> int:
-        if not HAS_EMBEDDINGS or not HAS_SKLEARN:
-            self.log("SKIP: embeddings/sklearn fehlen")
+        if not HAS_EMBEDDINGS:
+            self.log("SKIP: embeddings fehlen")
             return 0
         embedder = get_embedder()
         if embedder is None:
