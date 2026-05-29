@@ -96,7 +96,58 @@ def map_columns(df: pd.DataFrame) -> pd.DataFrame:
                         break
                 if canon in rename.values():
                     break
-    return df.rename(columns=rename)
+    out = df.rename(columns=rename)
+    out = _derive_kreditor_from_beleg(out)
+    return out
+
+
+_EMPTY_VALS = {"", "nan", "null", "none"}
+
+
+def _derive_kreditor_from_beleg(out: pd.DataFrame) -> pd.DataFrame:
+    """Leitet den Kreditor je DVBeleg aus der Klasse-K-/D-Zeile ab.
+
+    WHY(#21, README Diamant-Belegstruktur): Diamant-Exporte haben KEINE separate
+    Kreditor-Spalte. Jede Zeile ist eine Buchungszeile; ein DVBeleg besteht aus
+    S-Zeilen (Sachkonto, z.B. "Mieten / Pachten") + einer Klasse-K-Zeile
+    (Kreditor) bzw. D-Zeile (Debitor). Der Gegenpartei-/Kreditor-Name steht in
+    der *Bezeichnung der K-Zeile* — NICHT in der Bezeichnung der eigenen S-Zeile
+    (das wäre nur der Kontoname). kreditor wird daher je Beleg aus der K- (sonst
+    D-) Zeile befüllt, wo kreditor leer ist. bezeichnung bleibt eigene Spalte
+    (Anker für TEXT_KONTO_MATCH). Eine echte Kreditor-Spalte gewinnt.
+    """
+    if "bezeichnung" not in out.columns or "klasse" not in out.columns:
+        return out
+
+    # Beleg-Gruppierung: DVBelegnummer bevorzugt, sonst Belegnummer.
+    beleg = None
+    if "dvbelegnummer" in out.columns:
+        dv = out["dvbelegnummer"].astype(str).str.strip()
+        if dv.ne("").any():
+            beleg = dv
+    if beleg is None and "belegnummer" in out.columns:
+        beleg = out["belegnummer"].astype(str).str.strip()
+    if beleg is None:
+        return out
+
+    bez = out["bezeichnung"].astype(str).str.strip()
+    kl = out["klasse"].astype(str).str.strip().str.upper()
+    prio = kl.map({"K": 0, "D": 1})  # K vor D; S/leer → NaN
+
+    cand = pd.DataFrame({"beleg": beleg, "prio": prio, "bez": bez})
+    cand = cand[cand["prio"].notna() & ~cand["bez"].str.lower().isin(_EMPTY_VALS)]
+    if cand.empty:
+        return out
+    # K-Zeile vor D-Zeile, dann erste je Beleg = Kreditor-/Debitor-Name.
+    party = cand.sort_values("prio", kind="stable").groupby("beleg")["bez"].first()
+    derived = beleg.map(party)
+
+    if "kreditor" not in out.columns:
+        out["kreditor"] = ""
+    kred = out["kreditor"].astype(str).str.strip()
+    fill = (kred.eq("") | kred.str.lower().isin(_EMPTY_VALS)) & derived.notna()
+    out.loc[fill, "kreditor"] = derived[fill]
+    return out
 
 
 # ── Number parsing ──────────────────────────────────────────

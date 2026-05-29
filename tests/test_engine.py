@@ -967,19 +967,41 @@ class TestParserDiamantAliases:
         assert "bezeichnung" in mapped.columns
         assert "klasse" in mapped.columns
         assert "generalumgekehrt" in mapped.columns
+        # Echte Kreditor-Spalte gewinnt — wird NICHT von der Bezeichnung überschrieben
+        assert mapped["kreditor"].iloc[0] == "Lieferant A"
+        assert mapped["bezeichnung"].iloc[0] == "Mieten und Pachten"
 
-    def test_bezeichnung_maps_to_own_column_not_kreditor(self):
-        """#21: 'Bezeichnung' ist die Kontobezeichnung → eigene Spalte, NICHT kreditor."""
+    def test_kreditor_derived_from_klasse_k_line_per_beleg(self):
+        """#21 (README Diamant-Belegstruktur): kein Kreditor-Feld → Kreditor =
+        Bezeichnung der Klasse-K-Zeile DESSELBEN DVBelegs. Die S-Zeile (Sachkonto)
+        erbt den Partei-Namen, NICHT ihren eigenen Kontonamen. bezeichnung bleibt
+        eigene Spalte (TEXT_KONTO_MATCH-Anker)."""
         df = pd.DataFrame({
-            "Kontonummer": ["4711"],
-            "Buchungstext": ["Test"],
-            "Bezeichnung": ["Mieten und Pachten"],
+            "DVBelegnummer": ["15903", "15903"],
+            "Klasse": ["K", "S"],
+            "Kontonummer": ["700043", "61148"],
+            "Bezeichnung": ["ADAC Nordrhein e.V", "Mieten / Pachten"],
+            "Buchungstext": ["ADAC", "ADAC"],
         })
         mapped = map_columns(df)
-        assert "bezeichnung" in mapped.columns
-        assert mapped["bezeichnung"].iloc[0] == "Mieten und Pachten"
-        # Keine Kreditor-Spalte vorhanden → Bezeichnung darf NICHT als kreditor landen
-        assert "kreditor" not in mapped.columns
+        assert mapped["bezeichnung"].tolist() == ["ADAC Nordrhein e.V", "Mieten / Pachten"]
+        # Beide Zeilen tragen den Kreditor der K-Zeile — die S-Zeile NICHT "Mieten / Pachten"
+        assert mapped["kreditor"].tolist() == ["ADAC Nordrhein e.V", "ADAC Nordrhein e.V"]
+
+    def test_kreditor_empty_when_no_party_line(self):
+        """Beleg nur aus S-Zeilen (keine K/D-Partei) → kreditor bleibt leer (ehrlich,
+        kein Kontoname als Pseudo-Kreditor)."""
+        df = pd.DataFrame({
+            "DVBelegnummer": ["900", "900"],
+            "Klasse": ["S", "S"],
+            "Kontonummer": ["61148", "60036"],
+            "Bezeichnung": ["Mieten / Pachten", "Nebenkosten"],
+            "Buchungstext": ["x", "y"],
+        })
+        mapped = map_columns(df)
+        # kreditor entweder gar nicht angelegt oder leer — kein Kontoname als Pseudo-Kreditor
+        kred = mapped.get("kreditor", pd.Series([""] * len(mapped)))
+        assert kred.astype(str).str.strip().eq("").all()
 
     def test_pipe_delimited_csv(self, tmp_path):
         """Pipe-delimitierte CSV wird korrekt gelesen."""
