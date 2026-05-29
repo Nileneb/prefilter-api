@@ -96,7 +96,23 @@ def map_columns(df: pd.DataFrame) -> pd.DataFrame:
                         break
                 if canon in rename.values():
                     break
-    return df.rename(columns=rename)
+    out = df.rename(columns=rename)
+
+    # WHY(#21): Diamant-Exporte tragen den Kreditor-/Gegenpartei-Namen in
+    # "Bezeichnung" und haben KEINE separate Kreditor-Spalte. bezeichnung bleibt
+    # eigene Spalte (Anker für TEXT_KONTO_MATCH), füllt aber zusätzlich kreditor
+    # wo dieses leer ist — sonst blockieren NEAR_DUPLICATE / BELEG_KREDITOR_DUPLIKAT
+    # / NEUER_KREDITOR_HOCH ("kreditor leer"). Eine echte Kreditor-Spalte gewinnt.
+    if "bezeichnung" in out.columns:
+        _empty = {"", "nan", "null", "none"}
+        bez = out["bezeichnung"].astype(str).str.strip()
+        bez_valid = ~bez.str.lower().isin(_empty)
+        if "kreditor" not in out.columns:
+            out["kreditor"] = ""
+        kred = out["kreditor"].astype(str).str.strip()
+        fill = (kred.eq("") | kred.str.lower().isin(_empty)) & bez_valid
+        out.loc[fill, "kreditor"] = bez[fill]
+    return out
 
 
 # ── Number parsing ──────────────────────────────────────────
