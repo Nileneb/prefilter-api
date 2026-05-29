@@ -45,6 +45,10 @@ class TextEmbedder:
     def __init__(self) -> None:
         self._model: SentenceTransformer | None = None  # type: ignore[name-defined]
 
+    @property
+    def model_name(self) -> str:
+        return _MODEL_NAME
+
     def _ensure_model(self) -> None:
         if self._model is None:
             logger.info("Lade Embedding-Modell", model=_MODEL_NAME)

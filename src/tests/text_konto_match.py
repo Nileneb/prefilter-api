@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import AnalysisConfig
+from src.embedding_store import embed_cached
 from src.embeddings import HAS_EMBEDDINGS, get_embedder
 from src.tests.base import AnomalyTest, EngineStats
 
@@ -100,7 +101,7 @@ class TextKontoMatch(AnomalyTest):
         all_texts = list(set(buchungstexte) | set(anker_bezeichnungen))
         self.log("Embedding", n_unique_texts=len(all_texts), anchor_col=bez_col)
 
-        embeddings = embedder.embed_texts(all_texts)
+        embeddings = embed_cached(embedder, all_texts)
         text_to_idx = {t: i for i, t in enumerate(all_texts)}
 
         idx_buch = np.array([text_to_idx[t] for t in buchungstexte])

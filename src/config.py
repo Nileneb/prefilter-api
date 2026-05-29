@@ -167,6 +167,24 @@ class AnalysisConfig(BaseModel):
     )
     # Konto-Bereich kommt jetzt aus dem globalen konto_filter_* (s.o.), nicht mehr test-spezifisch.
 
+    # ── Konto-Text-Outlier (KONTO_TEXT_OUTLIER) ──────────────────────────────
+    konto_text_outlier_min_bookings: int = Field(
+        8, ge=3,
+        description="Mindest-Buchungen pro Konto für ein stabiles Textprofil (Standard: 8).",
+    )
+    konto_text_outlier_eps: float = Field(
+        0.55, ge=0.01, le=1.0,
+        description="DBSCAN epsilon (cosine-Distanz) für die Konto-Textcluster (Standard: 0.55). "
+                    "WHY: thematisch ähnliche Buchungstexte (z.B. Adressen) haben mit dem "
+                    "multilingualen MiniLM Distanzen ~0.3-0.6; ein themenfremder Text liegt ~0.9 "
+                    "entfernt. 0.55 clustert das Konto-Profil und isoliert Ausreißer robust. "
+                    "(Nicht 0.20 wie beim Kreditor-Clustering — das vergleicht fast identische Namen.)",
+    )
+    konto_text_outlier_min_samples: int = Field(
+        3, ge=2,
+        description="DBSCAN min_samples — Mindestgröße eines dichten Textclusters (Standard: 3).",
+    )
+
     # ── Gelernte Gewichte (via Feedback-Training) ─────────────
     custom_weights: dict[str, float] | None = Field(
         None,

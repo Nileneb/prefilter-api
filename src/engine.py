@@ -22,6 +22,7 @@ import pandas as pd
 from src import history
 from src.accounting import compute_signed_betrag, kontoklasse
 from src.config import AnalysisConfig
+from src.embedding_store import embed_cached
 from src.embeddings import HAS_EMBEDDINGS, get_embedder
 from src.kreditor_clustering import cluster_kreditors
 from src.logging_config import get_logger
@@ -32,6 +33,7 @@ from src.tests.buchungslogik import _GU_FALSY
 from src.tests.buchungslogik import get_tests as get_buchungslogik_tests
 from src.tests.duplikate import get_tests as get_duplikate_tests
 from src.tests.isolation_anomaly import get_tests as get_isolation_tests
+from src.tests.konto_text_outlier import get_tests as get_konto_text_outlier_tests
 from src.tests.kreditor import get_tests as get_kreditor_tests
 from src.tests.text_konto_match import get_tests as get_text_match_tests
 from src.tests.zeitreihe import get_tests as get_zeitreihe_tests
@@ -48,6 +50,7 @@ _ALL_TESTS = (
     + get_zeitreihe_tests()
     + get_isolation_tests()
     + get_text_match_tests()
+    + get_konto_text_outlier_tests()
 )
 
 # Abgeleitete Lookup-Strukturen
@@ -245,7 +248,7 @@ class AnomalyEngine:
             if embedder is not None:
                 try:
                     texts = df["buchungstext"].astype(str).tolist()
-                    self._text_embeddings = embedder.embed_texts(texts)
+                    self._text_embeddings = embed_cached(embedder, texts)
                     self._log(f"Text-Embeddings berechnet: {self._text_embeddings.shape}")
                 except Exception as e:
                     logger.warning("Text-Embedding fehlgeschlagen", error=str(e))
