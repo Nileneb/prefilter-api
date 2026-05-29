@@ -14,3 +14,11 @@ def test_old_api_callers_do_not_crash():
     cfg = AnalysisConfig.model_validate({"ertrag_abweichung_pct": 0.5, "zscore_threshold": 3.0})
     assert cfg.zscore_threshold == 3.0
     assert not hasattr(cfg, "ertrag_abweichung_pct")
+
+
+def test_konto_text_outlier_defaults():
+    from src.config import AnalysisConfig
+    c = AnalysisConfig()
+    assert c.konto_text_outlier_min_bookings == 8
+    assert c.konto_text_outlier_eps == 0.20
+    assert c.konto_text_outlier_min_samples == 3
