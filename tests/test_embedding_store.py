@@ -64,8 +64,22 @@ def test_empty_input(store_db):
     assert out.shape == (0,)
 
 
-def test_chunked_lookup_beyond_sqlite_batch(store_db):
-    """Regression: embed > 1000 distinct texts in one call (crosses _SQLITE_BATCH boundary)."""
+def test_cache_disabled_bypass(tmp_path, monkeypatch):
+    """EMBEDDING_CACHE_ENABLED=0 → kein SQLite, embedder für ALLE Texte aufgerufen,
+    Rückgabe ist trotzdem float32-Array (gleiche Semantik wie der Cache-Pfad)."""
+    db = tmp_path / "emb.db"
+    monkeypatch.setattr(es, "CACHE_DB", str(db))
+    monkeypatch.setattr(es, "_CACHE_ENABLED", False)
+    emb = _FakeEmbedder()
+    out = es.embed_cached(emb, ["miete", "strom", "miete"])
+    assert emb.embedded == ["miete", "strom", "miete"]  # alle, inkl. Dup, kein Cache
+    assert out.dtype == np.float32 and out.shape == (3, 4)
+    assert not db.exists()  # keine Cache-Datei angelegt
+
+
+def test_lookup_beyond_sqlite_variable_limit(store_db):
+    """Regression: > 1000 distinct texts in one call — TEMP-table JOIN hat kein
+    IN()-Variablen-Limit, daher muss das ohne Fehler durchlaufen."""
     n = 1_100
     texts = [f"text_{i:04d}" for i in range(n)]
 

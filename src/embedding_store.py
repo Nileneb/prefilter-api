@@ -33,9 +33,6 @@ def _key(model: str, text: str) -> str:
     return h.hexdigest()
 
 
-_SQLITE_BATCH = 900  # WHY: SQLite default SQLITE_LIMIT_VARIABLE_NUMBER=999; stay safely under
-
-
 def _connect() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(CACHE_DB) or ".", exist_ok=True)
     conn = sqlite3.connect(CACHE_DB)
@@ -59,7 +56,8 @@ def embed_cached(embedder, texts: list[str]) -> np.ndarray:
         return np.empty((0,), dtype=np.float32)
 
     if not _CACHE_ENABLED:
-        return embedder.embed_texts(texts)
+        # Gleiche dtype/shape-Semantik wie der Cache-Pfad (float32, 2D).
+        return np.asarray(embedder.embed_texts(texts), dtype=np.float32)
 
     model = embedder.model_name
     unique = list(dict.fromkeys(texts))  # Reihenfolge erhalten, dedupe
@@ -68,18 +66,22 @@ def embed_cached(embedder, texts: list[str]) -> np.ndarray:
     conn = _connect()
     try:
         keys = {t: _key(model, t) for t in unique}
-        key_list = [keys[t] for t in unique]
-        by_key: dict[str, np.ndarray] = {}
-        for i in range(0, len(key_list), _SQLITE_BATCH):
-            batch = key_list[i : i + _SQLITE_BATCH]
-            placeholders = ",".join("?" for _ in batch)
-            rows = conn.execute(
-                f"SELECT key, dim, vector FROM embeddings WHERE key IN ({placeholders})",
-                batch,
-            ).fetchall()
-            by_key.update(
-                {k: np.frombuffer(buf, dtype=np.float32).reshape(dim) for k, dim, buf in rows}
-            )
+        # Lookup-Keys über eine verbindungslokale TEMP-Tabelle joinen statt eines
+        # dynamischen IN(...): alle SQL-Strings sind Literale (keine String-
+        # Konkatenation, keine SQLite-Variablen-Limit-Grenze), die Keys sind
+        # gebundene Parameter. Robust für sehr viele unique Texte (großer Mandant).
+        conn.execute("CREATE TEMP TABLE _lookup_keys (key TEXT PRIMARY KEY)")
+        conn.executemany(
+            "INSERT OR IGNORE INTO _lookup_keys (key) VALUES (?)",
+            [(keys[t],) for t in unique],
+        )
+        rows = conn.execute(
+            "SELECT e.key, e.dim, e.vector FROM embeddings e "
+            "JOIN _lookup_keys k ON e.key = k.key"
+        ).fetchall()
+        by_key: dict[str, np.ndarray] = {
+            k: np.frombuffer(buf, dtype=np.float32).reshape(dim) for k, dim, buf in rows
+        }
 
         misses = [t for t in unique if keys[t] not in by_key]
         for t in unique:
