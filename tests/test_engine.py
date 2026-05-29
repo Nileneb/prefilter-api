@@ -971,18 +971,37 @@ class TestParserDiamantAliases:
         assert mapped["kreditor"].iloc[0] == "Lieferant A"
         assert mapped["bezeichnung"].iloc[0] == "Mieten und Pachten"
 
-    def test_bezeichnung_own_column_and_seeds_kreditor(self):
-        """#21: 'Bezeichnung' ist eigene Spalte (TEXT_KONTO_MATCH-Anker) UND füllt
-        kreditor, wenn keine eigene Kreditor-Spalte da ist (Diamant-Export ohne
-        Kreditor-Feld) — sonst blockieren NEAR_DUPLICATE & Co. ('kreditor leer')."""
+    def test_kreditor_derived_from_klasse_k_line_per_beleg(self):
+        """#21 (README Diamant-Belegstruktur): kein Kreditor-Feld → Kreditor =
+        Bezeichnung der Klasse-K-Zeile DESSELBEN DVBelegs. Die S-Zeile (Sachkonto)
+        erbt den Partei-Namen, NICHT ihren eigenen Kontonamen. bezeichnung bleibt
+        eigene Spalte (TEXT_KONTO_MATCH-Anker)."""
         df = pd.DataFrame({
-            "Kontonummer": ["700043"],
-            "Buchungstext": ["ADAC"],
-            "Bezeichnung": ["ADAC Nordrhein e.V"],
+            "DVBelegnummer": ["15903", "15903"],
+            "Klasse": ["K", "S"],
+            "Kontonummer": ["700043", "61148"],
+            "Bezeichnung": ["ADAC Nordrhein e.V", "Mieten / Pachten"],
+            "Buchungstext": ["ADAC", "ADAC"],
         })
         mapped = map_columns(df)
-        assert mapped["bezeichnung"].iloc[0] == "ADAC Nordrhein e.V"   # eigener Anker
-        assert mapped["kreditor"].iloc[0] == "ADAC Nordrhein e.V"      # seeded für Kreditor-Tests
+        assert mapped["bezeichnung"].tolist() == ["ADAC Nordrhein e.V", "Mieten / Pachten"]
+        # Beide Zeilen tragen den Kreditor der K-Zeile — die S-Zeile NICHT "Mieten / Pachten"
+        assert mapped["kreditor"].tolist() == ["ADAC Nordrhein e.V", "ADAC Nordrhein e.V"]
+
+    def test_kreditor_empty_when_no_party_line(self):
+        """Beleg nur aus S-Zeilen (keine K/D-Partei) → kreditor bleibt leer (ehrlich,
+        kein Kontoname als Pseudo-Kreditor)."""
+        df = pd.DataFrame({
+            "DVBelegnummer": ["900", "900"],
+            "Klasse": ["S", "S"],
+            "Kontonummer": ["61148", "60036"],
+            "Bezeichnung": ["Mieten / Pachten", "Nebenkosten"],
+            "Buchungstext": ["x", "y"],
+        })
+        mapped = map_columns(df)
+        # kreditor entweder gar nicht angelegt oder leer — kein Kontoname als Pseudo-Kreditor
+        kred = mapped.get("kreditor", pd.Series([""] * len(mapped)))
+        assert kred.astype(str).str.strip().eq("").all()
 
     def test_pipe_delimited_csv(self, tmp_path):
         """Pipe-delimitierte CSV wird korrekt gelesen."""
