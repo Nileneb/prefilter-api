@@ -8,9 +8,9 @@ import pytest
 from src.kontierung import (
     KontoIndex,
     KontoSuggester,
+    _norm_kreditor,
     build_index,
     ist_report,
-    _norm_kreditor,
 )
 
 
