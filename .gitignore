@@ -33,3 +33,4 @@ user_settings.json.tmp
 # Persistenter Embedding-Cache (#vektordb)
 data/embedding_cache.db
 data/embedding_cache.db-*
+data/konto_index/

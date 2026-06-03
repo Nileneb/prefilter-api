@@ -642,6 +642,42 @@ def _get_chart_builder(session: dict) -> ChartBuilder | None:
     return ChartBuilder(session["engine_df"], session["result"])
 
 
+def generate_ist_report(session: dict):
+    """IST-Zustand der Altdaten: wie wird faktisch kontiert?
+
+    Grundlage zum Schreiben einer Kontierungsrichtlinie — zeigt uneinheitlich
+    kontierte Kreditoren (Richtlinien-Kandidaten) + GT-/DIAMANT-Namensdrift.
+    Reiner Lese-Report, kein Embedding nötig.
+    """
+    from src.kontierung import build_index, ist_report
+
+    df = session.get("engine_df")
+    if df is None and session.get("file_path") is not None:
+        df = _rebuild_df_for_charts(
+            session["file_path"], session["result"], session.get("flags_parquet")
+        )
+        session["engine_df"] = df
+    if df is None:
+        return "⚠️ Erst eine Datei analysieren.", None, None
+
+    try:
+        rep = ist_report(build_index(df, embedder=None))
+    except ValueError as exc:
+        return f"⚠️ {exc}", None, None
+
+    summary = (
+        "### 🧭 IST-Zustand der Altdaten\n"
+        f"- **{rep['n_kreditoren']}** Kreditoren — davon **{rep['n_inkonsistente_kreditoren']}** "
+        "uneinheitlich kontiert (Richtlinien-Kandidaten)\n"
+        f"- **{rep['n_konten']}** Konten — davon **{rep['n_namens_drifts']}** mit "
+        "GT-/DIAMANT-Namensdrift\n\n"
+        "*Uneinheitliche Kreditoren stehen oben — diese Fälle braucht die "
+        "Kontierungsrichtlinie zuerst. Die Konto-Tabelle zeigt die faktischen "
+        "Buchungstext-Cluster je Konto.*"
+    )
+    return summary, pd.DataFrame(rep["kreditoren"]), pd.DataFrame(rep["konten"])
+
+
 def generate_score_distribution(session: dict):
     b = _get_chart_builder(session)
     if b is None:
@@ -1045,6 +1081,21 @@ with gr.Blocks(
                     btn_3d_landscape = gr.Button("▶ 3D Anomalie-Landschaft", size="sm")
                     chart_3d_landscape = gr.Plot(label="3D Anomalie-Landschaft")
 
+        with gr.Tab("🧭 IST-Zustand / Richtlinie"):
+            gr.Markdown(
+                "### IST-Zustand der Altdaten — Grundlage für die Kontierungsrichtlinie\n"
+                "Zeigt, **wie faktisch kontiert wird**: welche Kreditoren uneinheitlich "
+                "auf mehrere Konten gebucht werden (= das, was die Richtlinie zuerst "
+                "klären muss) und wo der DIAMANT-Kontoname vom Ground-Truth-Kontenrahmen "
+                "abweicht. Erst die Analyse einer Datei abschließen."
+            )
+            ist_btn = gr.Button("🧭 IST-Zustand erzeugen", variant="primary")
+            ist_summary = gr.Markdown("")
+            gr.Markdown("#### Kreditoren — uneinheitlich kontierte zuerst")
+            ist_kreditoren = gr.Dataframe(label="Kreditor-Kontierung", interactive=False, wrap=True)
+            gr.Markdown("#### Konten — Buchungstext-Cluster + Namensdrift")
+            ist_konten = gr.Dataframe(label="Konto-Übersicht", interactive=False, wrap=True)
+
         with gr.Tab("🔬 Eigene Visualisierung"):
             gr.Markdown(
                 "### Dynamischer Chart-Builder\n"
@@ -1187,6 +1238,12 @@ with gr.Blocks(
         chart_zeitreihe, chart_sh_balance,
     ]
     all_charts_btn.click(fn=generate_all_charts, inputs=[session_state], outputs=all_chart_outputs)
+
+    ist_btn.click(
+        fn=generate_ist_report,
+        inputs=[session_state],
+        outputs=[ist_summary, ist_kreditoren, ist_konten],
+    )
 
     btn_score_dist.click(fn=generate_score_distribution, inputs=[session_state], outputs=[chart_score_dist])
     btn_flag_freq.click(fn=generate_flag_frequency, inputs=[session_state], outputs=[chart_flag_freq])
