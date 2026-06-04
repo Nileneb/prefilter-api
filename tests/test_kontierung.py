@@ -84,3 +84,22 @@ def test_save_load_roundtrip(tmp_path, df):
 def test_build_index_requires_konto():
     with pytest.raises(ValueError, match="konto_soll"):
         build_index(pd.DataFrame([{"kreditor": "A", "buchungstext": "x"}]), embedder=None, gt={})
+
+
+def test_klasse_filter_only_sachkonto_lines():
+    # Ein Beleg: K-Zeile (Personenkonto 700177) + S-Zeile (Sachkonto 60046).
+    # Kreditor steht in beiden Zeilen; nur das Sachkonto darf in den Index.
+    df = pd.DataFrame(
+        [
+            {"klasse": "K", "konto_soll": "700177", "kreditor": "GEMA", "buchungstext": "GEMA"},
+            {"klasse": "S", "konto_soll": "60046", "kreditor": "GEMA", "buchungstext": "GEMA-Gebühren"},
+        ]
+    )
+    idx = build_index(df, embedder=None, gt={})
+    assert idx.kreditor_konto["gema"] == {"60046": 1}  # 700177 (Personenkonto) NICHT enthalten
+
+
+def test_no_klasse_column_counts_all_rows():
+    # Ohne klasse-Spalte (einfache Test-CSV) Fallback auf alle Zeilen.
+    df = pd.DataFrame([{"konto_soll": "60046", "kreditor": "GEMA", "buchungstext": "x"}])
+    assert build_index(df, embedder=None, gt={}).kreditor_konto["gema"] == {"60046": 1}

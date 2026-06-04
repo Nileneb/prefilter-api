@@ -124,12 +124,31 @@ def build_index(
 
     Erwartet (nach map_columns) mindestens `konto_soll`. `kreditor`,
     `buchungstext` und `bezeichnung` werden genutzt wenn vorhanden.
+
+    Die Kontierung lebt auf der SACHKONTO-Zeile (Klasse S). Ein Beleg
+    (DVBelegnummer) hat ≥2 Zeilen — K=Kreditor und D=Debitor tragen
+    Personenkonten, NICHT das Sachkonto. Wird über alle Zeilen gezählt,
+    vermischt sich das Personenkonto mit dem Sachkonto und jede Kreditor→Konto-
+    Karte wird unbrauchbar. Daher: bei vorhandener `klasse`-Spalte auf S-Zeilen
+    einschränken (Kreditor stammt aus der K-Zeile des Belegs, propagiert per
+    parser._derive_kreditor_from_beleg auf alle Zeilen inkl. S).
     """
     from src.parser import map_columns
 
     df = map_columns(df.copy())
     if "konto_soll" not in df.columns:
         raise ValueError("Spalte konto_soll fehlt — Kontierungs-Index nicht baubar.")
+
+    if "klasse" in df.columns:
+        n_before = len(df)
+        df = df[df["klasse"].astype(str).str.strip().str.upper() == "S"]
+        logger.info("Auf Sachkonto-Zeilen (Klasse S) eingeschränkt",
+                    zeilen_vorher=n_before, zeilen_sachkonto=len(df))
+    else:
+        logger.warning(
+            "Keine 'klasse'-Spalte — zähle ALLE Zeilen (K/D/S vermischt). "
+            "Nur für einfache Test-CSV ohne Beleg-Struktur korrekt."
+        )
 
     n = len(df)
     konto = df["konto_soll"].astype(str).str.strip()
