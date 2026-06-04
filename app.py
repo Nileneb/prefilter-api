@@ -658,26 +658,33 @@ def generate_ist_report(session: dict):
         )
         session["engine_df"] = df
     if df is None:
-        return "⚠️ Erst eine Datei analysieren.", None, None
+        return "⚠️ Erst eine Datei analysieren.", None, None, None
 
     try:
         rep = ist_report(build_index(df, embedder=None))
     except ValueError as exc:
-        return f"⚠️ {exc}", None, None
+        return f"⚠️ {exc}", None, None, None
 
     schwelle = int(rep["konsistenz_min"] * 100)
     summary = (
         "### 🧭 IST-Zustand der Altdaten (GuV-Sachkonten, Klasse S)\n"
-        f"- **{rep['n_kreditoren']}** Kreditoren — davon **{rep['n_inkonsistente_kreditoren']}** "
-        f"gestreut kontiert (dominantes Konto < {schwelle}% → Richtlinien-Kandidaten)\n"
+        f"- **Kreditoren (Lieferanten/Aufwand):** {rep['n_kreditoren']} — davon "
+        f"**{rep['n_inkonsistente_kreditoren']}** gestreut kontiert (dominantes Konto < {schwelle}%)\n"
+        f"- **Debitoren (Kunden/Bewohner/Ertrag):** {rep['n_debitoren']} — davon "
+        f"**{rep['n_inkonsistente_debitoren']}** gestreut\n"
         f"- **{rep['n_konten']}** GuV-Sachkonten — davon **{rep['n_namens_drifts']}** mit "
         "GT-/DIAMANT-Namensdrift\n\n"
-        "*Sortiert nach Streuung: die am uneinheitlichsten kontierten Kreditoren "
-        "(niedriger dominanter Anteil, viele Buchungen) stehen oben — diese Fälle "
-        "braucht die Kontierungsrichtlinie zuerst. Nur GuV-Konten (40000–79999); "
-        "Personen-/Bestandskonten sind ausgefiltert.*"
+        "*Getrennt nach Partner-Klasse (K-Zeile im Beleg → Kreditor, sonst Debitor). "
+        "Sortiert nach Streuung: die am uneinheitlichsten kontierten Partner oben — "
+        "diese Fälle braucht die Kontierungsrichtlinie zuerst. Nur GuV-Konten "
+        "(40000–79999); Personen-/Bestandskonten sind ausgefiltert.*"
     )
-    return summary, pd.DataFrame(rep["kreditoren"]), pd.DataFrame(rep["konten"])
+    return (
+        summary,
+        pd.DataFrame(rep["kreditoren"]),
+        pd.DataFrame(rep["debitoren"]),
+        pd.DataFrame(rep["konten"]),
+    )
 
 
 def generate_score_distribution(session: dict):
@@ -1093,9 +1100,11 @@ with gr.Blocks(
             )
             ist_btn = gr.Button("🧭 IST-Zustand erzeugen", variant="primary")
             ist_summary = gr.Markdown("")
-            gr.Markdown("#### Kreditoren — uneinheitlich kontierte zuerst")
+            gr.Markdown("#### Kreditoren (Lieferanten/Aufwand) — gestreut kontierte zuerst")
             ist_kreditoren = gr.Dataframe(label="Kreditor-Kontierung", interactive=False, wrap=True)
-            gr.Markdown("#### Konten — Buchungstext-Cluster + Namensdrift")
+            gr.Markdown("#### Debitoren (Kunden/Bewohner/Ertrag) — eigener Regelkreis")
+            ist_debitoren = gr.Dataframe(label="Debitor-Kontierung", interactive=False, wrap=True)
+            gr.Markdown("#### GuV-Sachkonten — Buchungstext-Cluster + Namensdrift")
             ist_konten = gr.Dataframe(label="Konto-Übersicht", interactive=False, wrap=True)
 
         with gr.Tab("🔬 Eigene Visualisierung"):
@@ -1244,7 +1253,7 @@ with gr.Blocks(
     ist_btn.click(
         fn=generate_ist_report,
         inputs=[session_state],
-        outputs=[ist_summary, ist_kreditoren, ist_konten],
+        outputs=[ist_summary, ist_kreditoren, ist_debitoren, ist_konten],
     )
 
     btn_score_dist.click(fn=generate_score_distribution, inputs=[session_state], outputs=[chart_score_dist])

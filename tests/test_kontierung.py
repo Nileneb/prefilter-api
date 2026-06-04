@@ -121,6 +121,24 @@ def test_guv_filter_excludes_bestand():
     }
 
 
+def test_partner_split_kreditor_vs_debitor():
+    # Beleg 1 hat eine K-Zeile → Kreditor (Aufwand 60000).
+    # Beleg 2 hat nur eine D-Zeile → Debitor (Ertrag 41000).
+    df = pd.DataFrame(
+        [
+            {"dvbelegnummer": "1", "klasse": "K", "konto_soll": "700001", "kreditor": "Lieferant X", "buchungstext": "a"},
+            {"dvbelegnummer": "1", "klasse": "S", "konto_soll": "60000", "kreditor": "Lieferant X", "buchungstext": "a"},
+            {"dvbelegnummer": "2", "klasse": "D", "konto_soll": "130001", "kreditor": "Bewohner Y", "buchungstext": "b"},
+            {"dvbelegnummer": "2", "klasse": "S", "konto_soll": "41000", "kreditor": "Bewohner Y", "buchungstext": "b"},
+        ]
+    )
+    rep = ist_report(build_index(df, embedder=None, gt={}))
+    kred = {r["kreditor"] for r in rep["kreditoren"]}
+    debs = {r["kreditor"] for r in rep["debitoren"]}
+    assert "lieferant x" in kred and "lieferant x" not in debs
+    assert "bewohner y" in debs and "bewohner y" not in kred
+
+
 def test_dominant_share_consistency_threshold():
     # 9:1 → dominanter Anteil 0.9 → konsistent bei Default 0.9; 8:2 → 0.8 → nicht.
     rows = (
