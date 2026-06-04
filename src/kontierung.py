@@ -119,6 +119,7 @@ def build_index(
     embedder: object | None = None,
     gt: dict[str, str] | None = None,
     gt_path: str | Path | None = DEFAULT_GT_PATH,
+    guv_only: bool = True,
 ) -> KontoIndex:
     """Baut den Präzedenz-Index aus einem (kanonisierten) Buchungs-DataFrame.
 
@@ -149,6 +150,23 @@ def build_index(
             "Keine 'klasse'-Spalte — zähle ALLE Zeilen (K/D/S vermischt). "
             "Nur für einfache Test-CSV ohne Beleg-Struktur korrekt."
         )
+
+    # GuV-Filter (BERECHNUNG.md §4b / UEBERBLICK.md): die Kontierungsentscheidung
+    # betrifft GuV-Konten Ertrag (40000–59999) + Aufwand (60000–79999). Bestand
+    # (<40000) und Kostenrechnung (≥80000) sind kein Prüfziel — dieselbe
+    # Konvention wie der globale konto_filter der Anomalie-Tests.
+    if guv_only:
+        from src.accounting import AUFWAND_MAX, ERTRAG_MIN
+
+        kn = pd.to_numeric(
+            df["konto_soll"].astype(str).str.replace(r"\D", "", regex=True),
+            errors="coerce",
+        )
+        n_before = len(df)
+        df = df[kn.between(ERTRAG_MIN, AUFWAND_MAX)]
+        logger.info("Auf GuV-Konten eingeschränkt",
+                    bereich=f"{ERTRAG_MIN}-{AUFWAND_MAX}",
+                    zeilen_vorher=n_before, zeilen_guv=len(df))
 
     n = len(df)
     konto = df["konto_soll"].astype(str).str.strip()
@@ -279,31 +297,38 @@ class KontoSuggester:
         return out
 
 
-def ist_report(index: KontoIndex) -> dict:
+def ist_report(index: KontoIndex, konsistenz_min: float = 0.9) -> dict:
     """Verdichtet den Index zum IST-Zustand-Report (Richtlinien-Entwurfshilfe).
 
+    Konsistenz wird über den DOMINANTEN ANTEIL gemessen, nicht binär: ein Kreditor
+    mit 99%/1% ist faktisch eindeutig, einer mit 44%/29%/… ist ein echter
+    Klärungsfall. `konsistent = dominant_anteil >= konsistenz_min` (Default 0.9).
+    Richtlinien-Kandidaten = die am stärksten gestreuten, nach Volumen gewichtet.
+
     Returns dict mit:
-      kreditoren: list[row]  — Konsistenz je Kreditor (uneinheitliche zuerst)
+      kreditoren: list[row]  — dominanter Anteil je Kreditor (gestreute zuerst)
       konten:     list[row]  — Buchungs-Volumen, Text-Cluster, GT-vs-DIAMANT-Drift
-      Kennzahlen: n_*, embeddings
+      Kennzahlen: n_*, konsistenz_min, embeddings
     """
     kreditor_rows = []
     for k, kc in index.kreditor_konto.items():
         total = sum(kc.values())
         konten = sorted(kc.items(), key=lambda kv: -kv[1])
+        dominant_anteil = round(konten[0][1] / total, 3)
         kreditor_rows.append(
             {
                 "kreditor": k,
                 "buchungen": total,
                 "n_konten": len(kc),
                 "dominant_konto": konten[0][0],
-                "dominant_anteil": round(konten[0][1] / total, 3),
-                "konsistent": len(kc) == 1,
+                "dominant_anteil": dominant_anteil,
+                "konsistent": dominant_anteil >= konsistenz_min,
                 "verteilung": ", ".join(f"{ko}:{c}" for ko, c in konten[:5]),
             }
         )
-    # uneinheitliche Kreditoren zuerst (Richtlinien-Kandidaten), dann nach Volumen
-    kreditor_rows.sort(key=lambda r: (r["konsistent"], -r["n_konten"], -r["buchungen"]))
+    # Richtlinien-Kandidaten zuerst: gestreute (niedriger dominanter Anteil),
+    # bei Gleichstand die mit mehr Buchungen (lohnenste Klärung) oben.
+    kreditor_rows.sort(key=lambda r: (r["konsistent"], r["dominant_anteil"], -r["buchungen"]))
 
     konto_count: Counter = Counter()
     konto_texts: dict[str, Counter] = {}
@@ -335,6 +360,7 @@ def ist_report(index: KontoIndex) -> dict:
         "n_konten": len(konto_rows),
         "n_inkonsistente_kreditoren": sum(1 for r in kreditor_rows if not r["konsistent"]),
         "n_namens_drifts": sum(1 for r in konto_rows if r["namens_drift"]),
+        "konsistenz_min": konsistenz_min,
         "embeddings": index.emb is not None,
     }
 

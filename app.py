@@ -665,15 +665,17 @@ def generate_ist_report(session: dict):
     except ValueError as exc:
         return f"⚠️ {exc}", None, None
 
+    schwelle = int(rep["konsistenz_min"] * 100)
     summary = (
-        "### 🧭 IST-Zustand der Altdaten\n"
+        "### 🧭 IST-Zustand der Altdaten (GuV-Sachkonten, Klasse S)\n"
         f"- **{rep['n_kreditoren']}** Kreditoren — davon **{rep['n_inkonsistente_kreditoren']}** "
-        "uneinheitlich kontiert (Richtlinien-Kandidaten)\n"
-        f"- **{rep['n_konten']}** Konten — davon **{rep['n_namens_drifts']}** mit "
+        f"gestreut kontiert (dominantes Konto < {schwelle}% → Richtlinien-Kandidaten)\n"
+        f"- **{rep['n_konten']}** GuV-Sachkonten — davon **{rep['n_namens_drifts']}** mit "
         "GT-/DIAMANT-Namensdrift\n\n"
-        "*Uneinheitliche Kreditoren stehen oben — diese Fälle braucht die "
-        "Kontierungsrichtlinie zuerst. Die Konto-Tabelle zeigt die faktischen "
-        "Buchungstext-Cluster je Konto.*"
+        "*Sortiert nach Streuung: die am uneinheitlichsten kontierten Kreditoren "
+        "(niedriger dominanter Anteil, viele Buchungen) stehen oben — diese Fälle "
+        "braucht die Kontierungsrichtlinie zuerst. Nur GuV-Konten (40000–79999); "
+        "Personen-/Bestandskonten sind ausgefiltert.*"
     )
     return summary, pd.DataFrame(rep["kreditoren"]), pd.DataFrame(rep["konten"])
 
