@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -75,6 +75,7 @@ class KontoIndex:
     model_name: str
     gt: dict[str, str]                         # konto -> GT-Bezeichnung
     diamant_bezeichnung: dict[str, str]        # konto -> häufigste DIAMANT-Bezeichnung
+    kreditor_partner: dict[str, str] = field(default_factory=dict)  # norm_kreditor -> 'K'|'D'
 
     def save(self, out_dir: str | Path) -> Path:
         p = Path(out_dir)
@@ -86,6 +87,7 @@ class KontoIndex:
             "model_name": self.model_name,
             "gt": self.gt,
             "diamant_bezeichnung": self.diamant_bezeichnung,
+            "kreditor_partner": self.kreditor_partner,
             "has_emb": self.emb is not None,
         }
         (p / "index.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
@@ -111,6 +113,7 @@ class KontoIndex:
             model_name=meta.get("model_name", ""),
             gt=meta.get("gt", {}),
             diamant_bezeichnung=meta.get("diamant_bezeichnung", {}),
+            kreditor_partner=meta.get("kreditor_partner", {}),
         )
 
 
@@ -119,6 +122,7 @@ def build_index(
     embedder: object | None = None,
     gt: dict[str, str] | None = None,
     gt_path: str | Path | None = DEFAULT_GT_PATH,
+    guv_only: bool = True,
 ) -> KontoIndex:
     """Baut den Präzedenz-Index aus einem (kanonisierten) Buchungs-DataFrame.
 
@@ -139,6 +143,15 @@ def build_index(
     if "konto_soll" not in df.columns:
         raise ValueError("Spalte konto_soll fehlt — Kontierungs-Index nicht baubar.")
 
+    # Partner-Klasse je Beleg: K=Kreditor (Lieferant), wenn der Beleg eine
+    # K-Zeile hat, sonst D=Debitor (Kunde/Bewohner). Auf alle Zeilen des Belegs
+    # (inkl. S) propagiert, damit die Kreditor- von der Debitorenseite trennbar
+    # ist (Kontierungsrichtlinie betrifft i.d.R. Kreditoren/Aufwand).
+    if "klasse" in df.columns and "dvbelegnummer" in df.columns:
+        kl_all = df["klasse"].astype(str).str.strip().str.upper()
+        has_k = kl_all.eq("K").groupby(df["dvbelegnummer"].astype(str)).transform("any")
+        df = df.assign(_partner=np.where(has_k, "K", "D"))
+
     if "klasse" in df.columns:
         n_before = len(df)
         df = df[df["klasse"].astype(str).str.strip().str.upper() == "S"]
@@ -150,6 +163,23 @@ def build_index(
             "Nur für einfache Test-CSV ohne Beleg-Struktur korrekt."
         )
 
+    # GuV-Filter (BERECHNUNG.md §4b / UEBERBLICK.md): die Kontierungsentscheidung
+    # betrifft GuV-Konten Ertrag (40000–59999) + Aufwand (60000–79999). Bestand
+    # (<40000) und Kostenrechnung (≥80000) sind kein Prüfziel — dieselbe
+    # Konvention wie der globale konto_filter der Anomalie-Tests.
+    if guv_only:
+        from src.accounting import AUFWAND_MAX, ERTRAG_MIN
+
+        kn = pd.to_numeric(
+            df["konto_soll"].astype(str).str.replace(r"\D", "", regex=True),
+            errors="coerce",
+        )
+        n_before = len(df)
+        df = df[kn.between(ERTRAG_MIN, AUFWAND_MAX)]
+        logger.info("Auf GuV-Konten eingeschränkt",
+                    bereich=f"{ERTRAG_MIN}-{AUFWAND_MAX}",
+                    zeilen_vorher=n_before, zeilen_guv=len(df))
+
     n = len(df)
     konto = df["konto_soll"].astype(str).str.strip()
     kred = (df["kreditor"] if "kreditor" in df.columns else pd.Series([""] * n)).astype(str).map(_norm_kreditor)
@@ -160,6 +190,14 @@ def build_index(
     for k, ko in zip(kred, konto):
         if k and ko:
             kreditor_konto.setdefault(k, Counter())[ko] += 1
+
+    # Partner-Klasse je Kreditor-Name (dominante Klasse über seine Zeilen).
+    partner_votes: dict[str, Counter] = {}
+    if "_partner" in df.columns:
+        for k, p in zip(kred, df["_partner"]):
+            if k:
+                partner_votes.setdefault(k, Counter())[p] += 1
+    kreditor_partner = {k: c.most_common(1)[0][0] for k, c in partner_votes.items()}
 
     text_map: dict[str, Counter] = {}
     for t, ko in zip(text, konto):
@@ -196,6 +234,7 @@ def build_index(
         model_name=model_name,
         gt=resolved_gt,
         diamant_bezeichnung={k: c.most_common(1)[0][0] for k, c in diamant_bez.items()},
+        kreditor_partner=kreditor_partner,
     )
 
 
@@ -279,31 +318,45 @@ class KontoSuggester:
         return out
 
 
-def ist_report(index: KontoIndex) -> dict:
+def ist_report(index: KontoIndex, konsistenz_min: float = 0.9) -> dict:
     """Verdichtet den Index zum IST-Zustand-Report (Richtlinien-Entwurfshilfe).
 
+    Konsistenz wird über den DOMINANTEN ANTEIL gemessen, nicht binär: ein Kreditor
+    mit 99%/1% ist faktisch eindeutig, einer mit 44%/29%/… ist ein echter
+    Klärungsfall. `konsistent = dominant_anteil >= konsistenz_min` (Default 0.9).
+    Richtlinien-Kandidaten = die am stärksten gestreuten, nach Volumen gewichtet.
+
+    Getrennt nach Partner-Klasse: `kreditoren` (Lieferanten/Aufwand) und
+    `debitoren` (Kunden/Bewohner/Ertrag). Eine Kontierungsrichtlinie betrifft
+    meist die Kreditorenseite; die Debitorenseite (Einnahmen) ist ein eigener
+    Regelkreis. Partner ohne K/D-Info landen bei den Kreditoren.
+
     Returns dict mit:
-      kreditoren: list[row]  — Konsistenz je Kreditor (uneinheitliche zuerst)
+      kreditoren / debitoren: list[row] — dominanter Anteil je Partner (gestreute zuerst)
       konten:     list[row]  — Buchungs-Volumen, Text-Cluster, GT-vs-DIAMANT-Drift
-      Kennzahlen: n_*, embeddings
+      Kennzahlen: n_*, konsistenz_min, embeddings
     """
-    kreditor_rows = []
-    for k, kc in index.kreditor_konto.items():
+    def _row(k: str, kc: dict[str, int]) -> dict:
         total = sum(kc.values())
         konten = sorted(kc.items(), key=lambda kv: -kv[1])
-        kreditor_rows.append(
-            {
-                "kreditor": k,
-                "buchungen": total,
-                "n_konten": len(kc),
-                "dominant_konto": konten[0][0],
-                "dominant_anteil": round(konten[0][1] / total, 3),
-                "konsistent": len(kc) == 1,
-                "verteilung": ", ".join(f"{ko}:{c}" for ko, c in konten[:5]),
-            }
-        )
-    # uneinheitliche Kreditoren zuerst (Richtlinien-Kandidaten), dann nach Volumen
-    kreditor_rows.sort(key=lambda r: (r["konsistent"], -r["n_konten"], -r["buchungen"]))
+        dominant_anteil = round(konten[0][1] / total, 3)
+        return {
+            "kreditor": k,
+            "partner": index.kreditor_partner.get(k, "K"),
+            "buchungen": total,
+            "n_konten": len(kc),
+            "dominant_konto": konten[0][0],
+            "dominant_anteil": dominant_anteil,
+            "konsistent": dominant_anteil >= konsistenz_min,
+            "verteilung": ", ".join(f"{ko}:{c}" for ko, c in konten[:5]),
+        }
+
+    all_rows = [_row(k, kc) for k, kc in index.kreditor_konto.items()]
+    # Richtlinien-Kandidaten zuerst: gestreute (niedriger dominanter Anteil),
+    # bei Gleichstand die mit mehr Buchungen (lohnenste Klärung) oben.
+    _sort = lambda rows: sorted(rows, key=lambda r: (r["konsistent"], r["dominant_anteil"], -r["buchungen"]))  # noqa: E731
+    kreditor_rows = _sort([r for r in all_rows if r["partner"] != "D"])
+    debitor_rows = _sort([r for r in all_rows if r["partner"] == "D"])
 
     konto_count: Counter = Counter()
     konto_texts: dict[str, Counter] = {}
@@ -330,11 +383,15 @@ def ist_report(index: KontoIndex) -> dict:
 
     return {
         "kreditoren": kreditor_rows,
+        "debitoren": debitor_rows,
         "konten": konto_rows,
         "n_kreditoren": len(kreditor_rows),
+        "n_debitoren": len(debitor_rows),
         "n_konten": len(konto_rows),
         "n_inkonsistente_kreditoren": sum(1 for r in kreditor_rows if not r["konsistent"]),
+        "n_inkonsistente_debitoren": sum(1 for r in debitor_rows if not r["konsistent"]),
         "n_namens_drifts": sum(1 for r in konto_rows if r["namens_drift"]),
+        "konsistenz_min": konsistenz_min,
         "embeddings": index.emb is not None,
     }
 
