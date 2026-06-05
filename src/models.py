@@ -12,6 +12,26 @@ from pydantic import BaseModel, create_model
 
 from src.validator import ALL_TEST_NAMES
 
+# ── Sachkonto-Vorschlag (Kontierungs-Index) ──────────────────────────────────
+
+class SuggestRequest(BaseModel):
+    kreditor: str = ""
+    buchungstext: str = ""
+    top_k: int = 3
+
+
+class Suggestion(BaseModel):
+    konto: str
+    bezeichnung: str = ""
+    score: float = 0.0
+    reason: str = ""
+
+
+class SuggestResponse(BaseModel):
+    suggestions: list[Suggestion] = []
+    warning: str | None = None
+
+
 # ── Job lifecycle ─────────────────────────────────────────────────────────────
 
 class JobResponse(BaseModel):

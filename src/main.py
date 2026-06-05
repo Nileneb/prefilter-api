@@ -5,6 +5,7 @@ Endpoints:
     POST   /api/jobs                  — Job anlegen, Datei hochladen
     GET    /api/jobs/{id}             — Job-Status abfragen
     POST   /api/jobs/{id}/cancel      — Job abbrechen (Stop-Button)
+    POST   /api/suggest               — Sachkonto-Vorschlag (Kreditor + Buchungstext)
     WS     /ws/jobs/{id}             — Realtime Log-Stream via WebSocket
 
 Gradio-UI wird unter /ui gemountet (Übergangsphase).
@@ -24,13 +25,14 @@ from fastapi.responses import JSONResponse
 
 from src import __version__
 from src.logging_config import get_logger, setup_logging
-from src.models import JobResponse, JobStatusResponse
+from src.models import JobResponse, JobStatusResponse, SuggestRequest, SuggestResponse
 
 setup_logging()
 logger = get_logger("prefilter.api")
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 JOB_TTL   = int(os.environ.get("JOB_TTL_SECONDS", "3600"))   # 1 Stunde
+KONTO_INDEX_PATH = os.environ.get("KONTO_INDEX_PATH", "data/konto_index")
 
 app = FastAPI(
     title="Buchungs-Anomalie Pre-Filter API",
@@ -66,6 +68,62 @@ async def healthz():
         logger.warning("Healthz: Redis nicht erreichbar", error=str(exc))
     body = {"status": "ok" if redis_ok else "degraded", "version": __version__, "redis": redis_ok}
     return JSONResponse(status_code=200 if redis_ok else 503, content=body)
+
+
+_konto_index = None  # lazy + prozesslokal gecacht
+
+
+def _get_konto_index():
+    """Lädt den Kontierungs-Index einmalig. None wenn (noch) nicht gebaut."""
+    global _konto_index
+    if _konto_index is None:
+        from src.kontierung import KontoIndex
+
+        try:
+            _konto_index = KontoIndex.load(KONTO_INDEX_PATH)
+        except FileNotFoundError:
+            return None
+    return _konto_index
+
+
+@app.post("/api/suggest", response_model=SuggestResponse)
+async def suggest_konto(req: SuggestRequest):
+    """Schlägt Sachkonten zu (Kreditor, Buchungstext) aus dem Präzedenz-Index vor.
+
+    Kreditor-Häufigkeit ist das Primärsignal; bei vorhandenen Embeddings ergänzt
+    Buchungstext-kNN (für unbekannte Kreditoren). Schlägt das Text-Embedding fehl
+    (z.B. GPU-OOM), wird fail-soft auf Kreditor-only zurückgefallen — mit
+    sichtbarem `warning`, nicht stumm.
+    """
+    from src.kontierung import KontoSuggester
+
+    idx = _get_konto_index()
+    if idx is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "suggestions": [],
+                "warning": f"Kein Kontierungs-Index unter {KONTO_INDEX_PATH}. "
+                           "Erst bauen: python -m src.kontierung build <export> "
+                           f"--out {KONTO_INDEX_PATH}",
+            },
+        )
+
+    embedder = None
+    warning = None
+    if idx.emb is not None and req.buchungstext.strip():
+        from src.embeddings import get_embedder
+
+        embedder = get_embedder()
+
+    try:
+        sugs = KontoSuggester(idx, embedder).suggest(req.kreditor, req.buchungstext, top_k=req.top_k)
+    except Exception as exc:  # noqa: BLE001 — Text-kNN-Degradation, NICHT verschluckt
+        logger.warning("Text-kNN fehlgeschlagen — Fallback auf Kreditor-Signal", error=str(exc))
+        warning = f"Text-Embedding nicht verfügbar ({type(exc).__name__}); nur Kreditor-Signal."
+        sugs = KontoSuggester(idx, None).suggest(req.kreditor, req.buchungstext, top_k=req.top_k)
+
+    return SuggestResponse(suggestions=sugs, warning=warning)
 
 
 @app.post("/api/jobs", response_model=JobResponse, status_code=202)
