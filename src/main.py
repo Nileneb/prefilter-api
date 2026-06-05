@@ -123,7 +123,7 @@ async def suggest_konto(req: SuggestRequest):
         warning = f"Text-Embedding nicht verfügbar ({type(exc).__name__}); nur Kreditor-Signal."
         sugs = KontoSuggester(idx, None).suggest(req.kreditor, req.buchungstext, top_k=req.top_k)
 
-    return SuggestResponse(suggestions=[s.__dict__ for s in sugs], warning=warning)
+    return SuggestResponse(suggestions=sugs, warning=warning)
 
 
 @app.post("/api/jobs", response_model=JobResponse, status_code=202)
